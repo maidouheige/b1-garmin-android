@@ -90,7 +90,7 @@ object ProfileStore {
             .putInt("birth_y", profile.birthYear)
             .putInt("birth_m", profile.birthMonth)
             .putInt("birth_d", profile.birthDay)
-            .putInt("age", profile.age)                                 // 兼容旧字段
+            .putInt("age", profile.ageFallback)                         // 兼容旧字段：存兜底年龄，不存按生日算出的年龄
             .putBoolean("sex_male", profile.male)
             .putString("sex", profile.sexText)                           // 兼容旧字段
             .apply()

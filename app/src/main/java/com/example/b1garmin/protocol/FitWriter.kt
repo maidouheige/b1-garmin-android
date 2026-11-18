@@ -3,7 +3,6 @@ package com.example.b1garmin.protocol
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Date
 
 /**
  * FIT 文件生成 —— 从 fit_writer.py 逐行移植，其实现忠实于 python-garminconnect 的

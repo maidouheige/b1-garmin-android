@@ -60,13 +60,23 @@ class ScaleReader(private val context: Context) {
 
     // ---------------- 蓝牙状态 ----------------
 
-    fun stateText(): String = when {
-        adapter == null -> "本机不支持蓝牙"
-        !adapter.isEnabled -> "蓝牙未开启"
-        else -> "蓝牙已开启（${adapter.name ?: "?"}）"
+    fun stateText(): String {
+        if (adapter == null) return "本机不支持蓝牙"
+        // Android 12+ 未授权 BLUETOOTH_CONNECT 时 getName()/isEnabled() 会抛 SecurityException。
+        // 这段在组合期被调用，一旦抛出就是「打开设置页直接闪退」，必须兜住。
+        return try {
+            if (!adapter.isEnabled) "蓝牙未开启"
+            else "蓝牙已开启（${adapter.name ?: "?"}）"
+        } catch (e: SecurityException) {
+            "蓝牙权限待授权"
+        }
     }
 
-    fun isBluetoothReady(): Boolean = adapter != null && adapter.isEnabled
+    fun isBluetoothReady(): Boolean = try {
+        adapter != null && adapter.isEnabled
+    } catch (e: SecurityException) {
+        false
+    }
 
     fun enableBluetoothIntent(): Intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
 
@@ -87,15 +97,20 @@ class ScaleReader(private val context: Context) {
     /** 诊断当前能不能扫描，返回一句人话；能扫则返回 null。 */
     fun diagnose(): String? {
         if (adapter == null) return "本机不支持蓝牙（适配器为空）"
-        if (!adapter.isEnabled) return "手机蓝牙未开启，请先打开蓝牙"
+        // 权限没给时 isEnabled()/bluetoothLeScanner 都可能抛 SecurityException。
+        // 这是启动自动监听的入口，抛出去就是「一开 App 就崩」，先查权限再碰适配器。
         val miss = missingPermissions()
         if (miss.isNotEmpty()) {
             return "缺少蓝牙权限：${miss.joinToString()}，请点「授权蓝牙权限」（若已拒绝需去系统设置里手动开）"
         }
-        if (adapter.bluetoothLeScanner == null) {
-            return "蓝牙扫描器不可用：系统限制（部分华为/荣耀机型需在「设置-应用-权限」里允许「附近的设备」）"
+        return try {
+            if (!adapter.isEnabled) return "手机蓝牙未开启，请先打开蓝牙"
+            if (adapter.bluetoothLeScanner == null) {
+                "蓝牙扫描器不可用：系统限制（部分华为/荣耀机型需在「设置-应用-权限」里允许「附近的设备」）"
+            } else null
+        } catch (e: SecurityException) {
+            "蓝牙权限被系统拒绝，请去系统设置里手动允许「附近的设备」"
         }
-        return null
     }
 
     fun lastDeviceAddress(): String? = prefs.getString("last_addr", null)

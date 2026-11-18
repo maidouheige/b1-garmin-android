@@ -92,7 +92,7 @@ class ProtocolTest {
         val lean = 67.75 - fat
         assertEquals(lean * 0.0522, e.boneMassKg, 0.2)
         assertEquals(lean * 0.6966 / 67.75 * 100.0, e.percentHydration, 0.3)
-        assertEquals(lean * 0.2520, fat * 0 + (lean - lean * 0.0522 - lean * 0.6966), 0.5)
+        assertEquals(lean * 0.2520, lean - lean * 0.0522 - lean * 0.6966, 0.5)
     }
 
     /** 年龄按出生日期算：生日当天的算满岁，生日没到少一岁。 */

@@ -98,6 +98,8 @@ class MainActivity : ComponentActivity() {
     private var updateInfo by mutableStateOf<Updater.UpdateInfo?>(null)
     /** 是否弹出「发现新版本」对话框 */
     private var showUpdateDialog by mutableStateOf(false)
+    /** 手动检查更新后的提示（已是最新 / 检查失败），null = 不弹。放 Activity 级跨重组保持。 */
+    private var updateNotice by mutableStateOf<String?>(null)
     /** 下载中的进度文本（空 = 没在下载） */
     private var updateProgress by mutableStateOf("")
 
@@ -400,20 +402,23 @@ class MainActivity : ComponentActivity() {
         ui.post { livePhase = "自动称重已停止" }
     }
 
-    /** 检查是否有新版本。silent=true 时「已是最新」不弹提示，避免打扰。 */
+    /** 检查是否有新版本。silent=true（启动自动查）失败/无新版都不打扰；手动查则一定有可见反馈。 */
     private suspend fun checkUpdate(silent: Boolean = false) {
         val result = Updater.check(versionCode())
         result.onSuccess { info ->
             if (info == null) {
-                if (!silent) log("✓ 已是最新版本（v${versionName()}）")
+                log("✓ 已是最新版本（v${versionName()}）")
+                // 手动点「检查更新」时给个明确提示，别让用户点了没反应
+                if (!silent) updateNotice = "✓ 当前已是最新版本（v${versionName()}），无需更新。"
             } else {
                 updateInfo = info
                 showUpdateDialog = true
                 log("发现新版本 v${info.versionName}，当前 v${versionName()}")
             }
         }.onFailure { e ->
-            // 静默检查失败很常见（没网/Gitee 抽风），别弹窗，只写日志
+            // 静默检查失败很常见（没网/Gitee 抽风），别弹窗打扰；手动检查则提示
             log("检查更新失败（不影响使用）：${e.message}")
+            if (!silent) updateNotice = "检查更新失败：${e.message ?: "未知错误"}\n（不影响正常使用，可稍后重试）"
         }
     }
 
@@ -688,6 +693,19 @@ class MainActivity : ComponentActivity() {
                             TextButton(enabled = updateProgress.isEmpty(),
                                 onClick = { showUpdateDialog = false }
                             ) { Text("稍后") }
+                        }
+                    )
+                }
+
+                // 手动检查更新后的提示：已是最新 / 检查失败，都给用户看得见的回应
+                val notice = updateNotice
+                if (notice != null) {
+                    AlertDialog(
+                        onDismissRequest = { updateNotice = null },
+                        title = { Text("检查更新") },
+                        text = { Text(notice) },
+                        confirmButton = {
+                            TextButton(onClick = { updateNotice = null }) { Text("知道了") }
                         }
                     )
                 }

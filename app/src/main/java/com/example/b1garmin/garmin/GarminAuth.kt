@@ -3,7 +3,6 @@ package com.example.b1garmin.garmin
 import android.content.Context
 import android.util.Base64
 import android.util.Log
-import com.example.b1garmin.protocol.FitWriter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.*
@@ -57,7 +56,6 @@ class GarminAuth(private val context: Context) {
             "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; Android/33; Dalvik/2.1.0"
 
         private val JSON_MEDIA = "application/json".toMediaType()
-        private val FORM_MEDIA = "application/x-www-form-urlencoded".toMediaType()
 
         /** SSO 登录页（WebView 用），service 必须与下面换 token 时一致 */
         fun ssoSigninUrl(): String =
