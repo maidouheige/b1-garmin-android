@@ -1,0 +1,38 @@
+# Gradle / Android 构建产物
+.gradle/
+build/
+*/build/
+local.properties
+gradle-app.setting
+.cxx/
+
+# APK / 签名材料（绝不入库）
+*.apk
+*.aab
+*.ap_
+*.dex
+*.jks
+*.keystore
+*.pepk
+*.signature
+
+# 凭据 / token / 配置文件（含明文的都不入库）
+*credential*
+*token*
+*.pem
+*.key
+config.json
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# macOS / 系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
