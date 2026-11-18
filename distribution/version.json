@@ -1,7 +1,7 @@
 {
-  "versionCode": 33,
-  "versionName": "0.15.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.15.0.apk",
-  "notes": "登录账号/密码输入拆成独立页，首页只留登录状态与入口，主界面进一步精简",
+  "versionCode": 34,
+  "versionName": "0.16.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.16.0.apk",
+  "notes": "退出登录并入账户页；校准按钮缩小移到资料设置旁；按钮加图标统一美化",
   "size": 9686002
 }

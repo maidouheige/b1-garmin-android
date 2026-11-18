@@ -14,7 +14,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -353,7 +357,6 @@ class MainActivity : ComponentActivity() {
                 } else {
                     MainScreen(
                         loggedIn = loggedIn,
-                        loggedInState = loggedInState,
                         scope = scope,
                         version = versionName(),
                         profile = profileState.value,
@@ -787,7 +790,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainScreen(
         loggedIn: Boolean,
-        loggedInState: MutableState<Boolean>,
         scope: kotlinx.coroutines.CoroutineScope,
         version: String,
         profile: Profile,
@@ -828,8 +830,14 @@ class MainActivity : ComponentActivity() {
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedButton(onClick = onOpenLogin) {
-                        Text(if (loggedIn) "账户 →" else "登录 Garmin →")
+                    OutlinedButton(
+                        onClick = onOpenLogin,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Person, contentDescription = null,
+                            modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (loggedIn) "账户" else "登录")
                     }
                 }
                 Text(
@@ -881,14 +889,32 @@ class MainActivity : ComponentActivity() {
                 // ---------------- 同步 ----------------
                 Text("② 连接秤并同步", style = MaterialTheme.typography.titleMedium)
 
-                // 身高/年龄/性别：只读展示，要改去「资料设置」里改一次
+                // 身高/年龄/性别只读展示；资料设置 + 校准两个小按钮并排（低频，不占大块）
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "身高 %.1fcm · %s · %d岁".format(profile.heightCm, profile.sexLabel, profile.age),
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedButton(onClick = onOpenSettings) { Text("资料设置") }
+                    OutlinedButton(
+                        onClick = onOpenSettings,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = null,
+                            modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("资料设置", style = MaterialTheme.typography.labelMedium)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    OutlinedButton(
+                        onClick = onOpenCalib,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null,
+                            modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("校准", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
                 if (profile.targetKg > 0) {
                     Text(
@@ -1046,18 +1072,6 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 ) { Text(if (busy) "处理中…（最长 100 秒）" else "连接秤 → 称重并同步到 Garmin") }
 
-                // ---- 校准入口：低频功能，独立成页，首页只留一个按钮 ----
-                OutlinedButton(
-                    onClick = onOpenCalib,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("体脂率校准 / 验证 · 诊断工具 →") }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "第一次使用、或换秤、或发现差值变大时才需要进去；平时称重组不用管。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
-
 Spacer(Modifier.height(16.dp))
 
                 // 上次崩溃的话，把现场显示出来（手机上抓不到 logcat，只能靠这个）
@@ -1087,15 +1101,8 @@ Spacer(Modifier.height(16.dp))
                     Spacer(Modifier.height(8.dp))
                 }
 
-                // ---------------- 结果 / 调试日志 ----------------
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("结果", style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f))
-                    TextButton(onClick = {
-                        auth.clear(); loggedInState.value = false
-                        summary = ""; log("已清除 Garmin 登录状态")
-                    }) { Text("退出登录") }
-                }
+                // ---------------- 结果 / 调试日志（退出登录已移到账户页）----------------
+                Text("结果", style = MaterialTheme.typography.titleMedium)
 
                 // 只显示结论：成功就一行，失败才需要展开细看
                 Surface(
@@ -1244,7 +1251,15 @@ Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("体脂率校准 / 验证", style = MaterialTheme.typography.headlineSmall,
                             modifier = Modifier.weight(1f))
-                        TextButton(onClick = onBack) { Text("← 返回") }
+                        TextButton(
+                            onClick = onBack,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null,
+                                modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(2.dp))
+                            Text("返回")
+                        }
                     }
                     Spacer(Modifier.height(10.dp))
                 // ---- 体脂率校准：通用 BIA 方程和厂家算法有系统偏差，用阿福的值对一次 ----
@@ -1631,7 +1646,15 @@ Spacer(Modifier.height(16.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("登录 Garmin", style = MaterialTheme.typography.headlineSmall,
                         modifier = Modifier.weight(1f))
-                    TextButton(onClick = onBack) { Text("← 返回") }
+                    TextButton(
+                        onClick = onBack,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null,
+                            modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("返回")
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
 
@@ -1642,6 +1665,26 @@ Spacer(Modifier.height(16.dp))
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(10.dp))
+
+                // 登录 / 退出放一起：已登录时给一个退出按钮
+                if (loggedIn) {
+                    OutlinedButton(
+                        onClick = {
+                            auth.clear()
+                            loggedInState.value = false
+                            summary = ""
+                            email = ""; password = ""
+                            log("已退出 Garmin 登录")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("退出登录")
+                    }
+                    Spacer(Modifier.height(14.dp))
+                }
 
                 OutlinedTextField(
                     email, { email = it }, label = { Text("邮箱") },
