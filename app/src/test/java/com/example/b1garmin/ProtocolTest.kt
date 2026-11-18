@@ -82,6 +82,41 @@ class ProtocolTest {
         assertEquals(raw, e.bodyFatPercent, 0.11)
     }
 
+    /**
+     * 出厂内置阿福公式：新装/重装/换手机（没有任何校准记录）的用户，
+     * 用出厂默认偏移兜底后，体脂率应直接对齐阿福，无需手动校准。
+     */
+    @Test
+    fun factoryDefaultAlignsWithAfuWithoutCalibration() {
+        // 空偏移（= 从来没校准过的秤）经出厂兜底后，两档都应拿到内置值
+        val effective = BodyComp.Offsets().withFactoryDefault()
+        assertEquals(3.8, effective.forModel("segal_3a_male_lt20"), 1e-9)
+        assertEquals(-0.8, effective.forModel("deurenberg_bmi_fallback"), 1e-9)
+
+        // 用这条默认标准估算：阻抗档算出 15.9% + 3.8 ≈ 19.7%，落在合理区间，
+        // 且明显区别于「完全不校准」的原始值（约 15.9%）—— 证明开箱即已对齐阿福量级
+        val raw = BodyComp.rawBf(67.75, 174.5, 35, "male", 512.0).first
+        val e = BodyComp.estimate(67.75, 174.5, 35, "male", 512.0, effective)!!
+        assertTrue(e.model.startsWith("segal"))
+        assertEquals(raw + 3.8, e.bodyFatPercent, 0.11)
+        assertTrue(e.bodyFatPercent > raw + 3.0)
+    }
+
+    /** 真机已经校准过的值优先级高于出厂默认，绝不能被默认值覆盖。 */
+    @Test
+    fun factoryDefaultNeverOverridesUserCalibration() {
+        // 用户真机只校了阻抗档（比如 +3.2），BMI 档没校
+        val userCalib = BodyComp.Offsets(imp = 3.2)
+        val effective = userCalib.withFactoryDefault()
+        assertEquals(3.2, effective.imp!!, 1e-9)          // 用户校准值保留
+        assertEquals(-0.8, effective.bmi!!, 1e-9)         // 没校的档才用出厂默认
+
+        // 用户校准值哪怕和默认很接近，也要用用户的（比如 0.0 是用户有意设的）
+        val zeroed = BodyComp.Offsets(imp = 0.0, bmi = 0.0).withFactoryDefault()
+        assertEquals(0.0, zeroed.forModel("segal_3b_male_ge20"), 1e-9)
+        assertEquals(0.0, zeroed.forModel("deurenberg_bmi_fallback"), 1e-9)
+    }
+
     /** 阿福那次实测：67.75kg / 18.0% → 反推出的四分量应当闭合。 */
     @Test
     fun fourComponentModelCloses() {

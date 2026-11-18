@@ -36,7 +36,33 @@ object BodyComp {
         fun forModel(model: String): Double =
             (if (model.startsWith("segal")) imp else bmi) ?: 0.0
 
-        companion object { val NONE = Offsets() }
+        /**
+         * 用出厂默认填补「没校准过的档」，已校准的档原样保留。
+         * 等价于 MainActivity 里的 `imp ?: 默认.imp, bmi ?: 默认.bmi`，
+         * 抽成纯函数是为了能单测这条开箱即用的关键路径。
+         */
+        fun withFactoryDefault(factory: Offsets = AFU_FACTORY): Offsets = Offsets(
+            imp = imp ?: factory.imp,
+            bmi = bmi ?: factory.bmi,
+        )
+
+        companion object {
+            /** 完全不校准（仅单测/对比原始值时用） */
+            val NONE = Offsets()
+
+            /**
+             * 出厂默认偏移：已内置阿福的正确算法，开箱即用。
+             *
+             * 这两个值是 2026-11-17 用阿福 App 实测、连续多次验证固化下来的：
+             * - 阻抗档 +3.8：Segal 算出约 14.4~15.0%，阿福显示 18.0~18.6%
+             * - BMI 档 -0.8：Deurenberg 算出约 18.6%，阿福显示 18.0%
+             *
+             * 应用在 [com.example.b1garmin.MainActivity.savedOffsets] 里对「该秤没校准过的档」
+             * 用这里的值兜底：新装/重装/换手机的用户不用再走一遍校准，直接和阿福对齐。
+             * 用户真机已经校准过的值优先级更高，不会被这里的默认值覆盖。
+             */
+            val AFU_FACTORY = Offsets(imp = 3.8, bmi = -0.8)
+        }
     }
 
     data class Estimate(

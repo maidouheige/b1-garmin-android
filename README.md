@@ -4,13 +4,13 @@
 
 站上秤 → 光脚站稳十几秒 → 体重、体脂、肌肉、水分等自动进 Garmin，无需电脑、无需 Root。
 
-> 当前版本 **v0.17.2**。这是一个个人自用的小工具，源码开放供参考。
+> 当前版本 **v0.18.0**。这是一个个人自用的小工具，源码开放供参考。
 
 ## 📥 下载
 
 | 渠道 | 地址 |
 |---|---|
-| **APK 直链**（手机直接点，推荐） | [B1-Garmin-Sync-v0.17.2.apk](https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.17.2.apk) |
+| **APK 直链**（手机直接点，推荐） | [B1-Garmin-Sync-v0.18.0.apk](https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.18.0.apk) |
 | Gitee Release（更新说明） | https://gitee.com/maidouheige/b1-garmin-android/releases |
 | GitHub Release | https://github.com/maidouheige/b1-garmin-android/releases |
 

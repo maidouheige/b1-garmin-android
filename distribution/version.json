@@ -1,7 +1,7 @@
 {
-  "versionCode": 37,
-  "versionName": "0.17.2",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.17.2.apk",
-  "notes": "修复:蓝牙权限未授予时打开设置页/启动自动监听不再闪退;修正直接填年龄模式被覆盖;无新版/检查失败也弹可见提示;清理无用代码",
+  "versionCode": 38,
+  "versionName": "0.18.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.18.0.apk",
+  "notes": "v0.18.0:内置阿福体脂算法为出厂默认(阻抗+3.8/BMI-0.8),新装即对齐阿福无需校准;真机已有校准值优先不受影响;对不上再手动校准",
   "size": 9714674
 }

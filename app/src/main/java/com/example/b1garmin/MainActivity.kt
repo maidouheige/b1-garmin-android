@@ -221,8 +221,9 @@ class MainActivity : ComponentActivity() {
             log("⚠ 这次没测到阻抗：体脂率只能按体重估算，反映不了真实体成分")
             log("   光脚、脚底微湿、四个电极都踩到、站直别动，再称一次更容易出阻抗")
         } else if (calibOf(addr).imp == null) {
-            log("⚠ 这次测到阻抗了，但「${targetName.ifBlank { "这台秤" }}」还没校准过，用的是通用方程的原始值")
-            log("   点「设置 → 体脂率校准」进去填阿福这次的体重和体脂率，点一次校准就能对齐")
+            log("· 「${targetName.ifBlank { "这台秤" }}」没手动校准过，按内置阿福公式算（阻抗档 %+.1f）"
+                .format(BodyComp.Offsets.AFU_FACTORY.imp ?: 0.0))
+            log("   已默认对齐阿福；只有实测和阿福对不上时，才需要去「设置 → 体脂率校准」校准")
         }
         recs.forEach { rec ->
             val whenStr = java.text.SimpleDateFormat("MM-dd HH:mm")
@@ -726,7 +727,9 @@ class MainActivity : ComponentActivity() {
      */
     private fun savedOffsets(addr: String): BodyComp.Offsets {
         val c = calibOf(addr)
-        return BodyComp.Offsets(imp = c.imp, bmi = c.bmi)
+        // 出厂已内置阿福标准：没手动校准过的档直接用出厂默认，开箱即和阿福对齐。
+        // 真机校准过的值（c.imp / c.bmi）优先，不会被默认值覆盖。
+        return BodyComp.Offsets(imp = c.imp, bmi = c.bmi).withFactoryDefault()
     }
 
     /** 校准状态（内存缓存 + 落盘） */
@@ -1600,7 +1603,8 @@ class MainActivity : ComponentActivity() {
 
                 Text("校准步骤", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "这一页只在你第一次使用、换秤、或发现体脂率跟阿福差得多时才需要。" +
+                    "App 已内置阿福公式，装好即可用、默认和阿福对齐。" +
+                            "这一页只在换新秤、或发现体脂率跟阿福差得多时才需要；" +
                             "平时称重不用管这里，回首页站着称即可，数据会自动同步。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline
@@ -1617,7 +1621,7 @@ class MainActivity : ComponentActivity() {
                         Text(
                             when {
                                 frozen -> "✓ 已经跟阿福的标准对齐了"
-                                !anyCalibrated -> "第一次校准 · 照这四步做"
+                                !anyCalibrated -> "已内置阿福公式 · 对不上才按这几步校准"
                                 else -> "以后每次这样验证"
                             },
                             style = MaterialTheme.typography.bodyMedium,
@@ -1629,10 +1633,11 @@ class MainActivity : ComponentActivity() {
                                 frozen ->
                                     "以后正常称重、正常同步就行，这一块不用再碰了。"
                                 !anyCalibrated ->
-                                    "① 用阿福称一次，记下体重和体脂率\n" +
+                                    "装好直接用就行，体脂率默认和阿福对齐。只有实测对不上时才校准：\n" +
+                                            "① 用阿福称一次，记下体重和体脂率\n" +
                                             "② 关掉阿福（后台也要划掉，它占着蓝牙）\n" +
-                                            "③ 回到首页站着称一次（现在打开 App 就自动称重，不用点按钮）\n" +
-                                            "④ 再回到这页，在下面填阿福的体重和体脂率，点下面的按钮"
+                                            "③ 回到首页站着称一次（打开 App 就自动称重）\n" +
+                                            "④ 再回到这页，填阿福的体重和体脂率，点下面的按钮"
                                 else ->
                                     "① 正常称重（阿福称一次 + 首页自动称重一次）\n" +
                                             "② 在下面填阿福这次的数值\n" +
@@ -1849,20 +1854,21 @@ class MainActivity : ComponentActivity() {
                 Text(
                     buildString {
                         append("阻抗档 ")
-                        append(offImp?.let { "已校准 %+.1f".format(it) } ?: "未校准")
+                        append(offImp?.let { "已校准 %+.1f".format(it) }
+                            ?: "内置 %+.1f".format(BodyComp.Offsets.AFU_FACTORY.imp ?: 0.0))
                         append("　|　BMI 估算档 ")
-                        append(offBmi?.let { "已校准 %+.1f".format(it) } ?: "未校准")
+                        append(offBmi?.let { "已校准 %+.1f".format(it) }
+                            ?: "内置 %+.1f".format(BodyComp.Offsets.AFU_FACTORY.bmi ?: 0.0))
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (offImp == null && offBmi == null) MaterialTheme.colorScheme.outline
-                    else MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary
                 )
                 Text(
                     when {
                         frozen -> "✓ 已按阿福标准校准并固化：以后每次称重都按这个标准算，不用再校准了"
                         streak > 0 -> "验证：已连续 $streak 次与阿福数据对得上，再来 ${CALIB_FREEZE_STREAK - streak} 次就固化"
                         anyCalibrated -> "验证：还没对比过。称一次后填阿福的数值，点上面的按钮对比"
-                        else -> "还没校准：填阿福的数值后点上面的按钮，一次就好"
+                        else -> "✓ 已内置阿福公式，开箱就按阿福标准算；只有实测和阿福对不上时才需要在这里校准"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (frozen) MaterialTheme.colorScheme.primary
