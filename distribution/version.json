@@ -1,7 +1,7 @@
 {
-  "versionCode": 32,
-  "versionName": "0.14.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.14.0.apk",
-  "notes": "体脂率校准/验证/诊断工具拆成独立页面，首页只留入口，主界面更清爽",
-  "size": 9681906
+  "versionCode": 33,
+  "versionName": "0.15.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.15.0.apk",
+  "notes": "登录账号/密码输入拆成独立页，首页只留登录状态与入口，主界面进一步精简",
+  "size": 9686002
 }

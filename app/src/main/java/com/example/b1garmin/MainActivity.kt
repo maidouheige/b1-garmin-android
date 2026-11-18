@@ -291,7 +291,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val scope = rememberCoroutineScope()
-                var showLogin by remember { mutableStateOf(false) }
+                var showLogin by remember { mutableStateOf(false) }       // 网页登录 WebView
+                var showLoginPage by remember { mutableStateOf(false) }   // 登录页（账号/密码输入）
                 var showSettings by remember { mutableStateOf(false) }
                 var showCalib by remember { mutableStateOf(false) }
                 val loggedIn by loggedInState
@@ -314,6 +315,7 @@ class MainActivity : ComponentActivity() {
                             onTicket = { ticket ->
                                 log("抓到 ticket（长度 ${ticket.length}），正在换取 token…")
                                 showLogin = false
+                                showLoginPage = false
                                 scope.launch {
                                     val r = auth.exchangeTicket(ticket)
                                     loggedInState.value = r.isSuccess
@@ -336,6 +338,13 @@ class MainActivity : ComponentActivity() {
                             Icon(Icons.Default.Close, contentDescription = "关闭")
                         }
                     }
+                } else if (showLoginPage) {
+                    LoginScreen(
+                        loggedIn = loggedIn,
+                        loggedInState = loggedInState,
+                        onWebLogin = { showLogin = true },
+                        onBack = { showLoginPage = false },
+                    )
                 } else if (showCalib) {
                     CalibScreen(
                         loggedIn = loggedIn,
@@ -352,7 +361,7 @@ class MainActivity : ComponentActivity() {
                         btState = { btTick.value; scale.stateText() },
                         btReady = { btTick.value; scale.isBluetoothReady() },
                         btDiag = { btTick.value; scale.diagnose() },
-                        onWebLogin = { showLogin = true },
+                        onOpenLogin = { showLoginPage = true },
                         onOpenSettings = { showSettings = true },
                         onEnableBluetooth = {
                             if (scale.isBluetoothReady()) {
@@ -785,15 +794,13 @@ class MainActivity : ComponentActivity() {
         btState: () -> String,
         btReady: () -> Boolean,
         btDiag: () -> String?,
-        onWebLogin: () -> Unit,
+        onOpenLogin: () -> Unit,
         onOpenSettings: () -> Unit,
         onOpenCalib: () -> Unit,
         onEnableBluetooth: () -> Unit,
         onRequestPermission: () -> Unit,
         onOpenAppSettings: () -> Unit,
     ) {
-        var email by remember { mutableStateOf("") }
-        var password by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
 
         Surface(Modifier.fillMaxSize()) {
@@ -809,61 +816,32 @@ class MainActivity : ComponentActivity() {
                         Text("v$version · 检查更新", style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                Text(
-                    if (loggedIn) "● Garmin 已登录" else "○ Garmin 未登录",
-                    color = if (loggedIn) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error
-                )
+                // ---------------- 登录状态 + 入口（输入区已移到独立登录页）----------------
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (loggedIn) "● Garmin 已登录" else "○ Garmin 未登录",
+                        color = if (loggedIn) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(onClick = onOpenLogin) {
+                        Text(if (loggedIn) "账户 →" else "登录 Garmin →")
+                    }
+                }
                 Text(
                     "蓝牙：" + btState(),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (btReady()) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.error
                 )
-                Spacer(Modifier.height(10.dp))
-
-                // ---------------- 登录 ----------------
-                Text("① 登录 Garmin（国际版）", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    email, { email = it }, label = { Text("邮箱") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    password, { password = it }, label = { Text("密码") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        scope.launch {
-                            busy = true; showDebug = false
-                            log("开始密码登录…")
-                            val r = auth.loginWithPassword(email.trim(), password)
-                            if (r.isSuccess) {
-                                loggedInState.value = true
-                                log("✓ Garmin 登录成功")
-                            } else {
-                                log("✗ ${r.exceptionOrNull()?.message}")
-                            }
-                            busy = false
-                        }
-                    },
-                    enabled = !busy && email.isNotBlank() && password.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(if (busy) "登录中…" else "登录") }
-
-                Spacer(Modifier.height(6.dp))
-                OutlinedButton(onClick = onWebLogin, modifier = Modifier.fillMaxWidth()) {
-                    Text("改用网页登录（开启了两步验证时用）")
-                }
-                Text("密码只在本机内存里用一次，不保存、不上传任何服务器。",
-                    style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(16.dp))
 
                 // ---------------- 蓝牙 ----------------
-                Text("② 蓝牙与权限", style = MaterialTheme.typography.titleMedium)
+                Text("① 蓝牙与权限", style = MaterialTheme.typography.titleMedium)
                 val diag = btDiag()
                 if (diag != null) {
                     Text(
@@ -901,7 +879,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(16.dp))
 
                 // ---------------- 同步 ----------------
-                Text("③ 连接秤并同步", style = MaterialTheme.typography.titleMedium)
+                Text("② 连接秤并同步", style = MaterialTheme.typography.titleMedium)
 
                 // 身高/年龄/性别：只读展示，要改去「资料设置」里改一次
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1625,6 +1603,92 @@ Spacer(Modifier.height(16.dp))
                 )
             }
 
+        }
+    }
+
+
+    // ====================================================================
+    // 登录页（账号/密码输入从首页拆出，功能不变）
+    // ====================================================================
+    @Composable
+    private fun LoginScreen(
+        loggedIn: Boolean,
+        loggedInState: androidx.compose.runtime.MutableState<Boolean>,
+        onWebLogin: () -> Unit,
+        onBack: () -> Unit,
+    ) {
+        var email by remember { mutableStateOf("") }
+        var password by remember { mutableStateOf("") }
+        var busy by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
+
+        Surface(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("登录 Garmin", style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.weight(1f))
+                    TextButton(onClick = onBack) { Text("← 返回") }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    if (loggedIn) "● 当前已登录 Garmin（国际版）" else "○ 尚未登录，请登录 Garmin 国际版账号",
+                    color = if (loggedIn) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    email, { email = it }, label = { Text("邮箱") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    password, { password = it }, label = { Text("密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        scope.launch {
+                            busy = true; showDebug = false
+                            log("开始密码登录…")
+                            val r = auth.loginWithPassword(email.trim(), password)
+                            if (r.isSuccess) {
+                                loggedInState.value = true
+                                log("✓ Garmin 登录成功")
+                                onBack()   // 登录成功回首页
+                            } else {
+                                log("✗ ${r.exceptionOrNull()?.message}")
+                            }
+                            busy = false
+                        }
+                    },
+                    enabled = !busy && email.isNotBlank() && password.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(if (busy) "登录中…" else "登录") }
+
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(onClick = onWebLogin, modifier = Modifier.fillMaxWidth()) {
+                    Text("改用网页登录（开启了两步验证时用）")
+                }
+                Text("密码只在本机内存里用一次，不保存、不上传任何服务器。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "说明：这里登录的是 Garmin 国际区账号（connect.garmin.com），" +
+                            "中国区账号不适用。登录成功后回到首页称重同步即可。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
         }
     }
 
