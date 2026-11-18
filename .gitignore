@@ -22,6 +22,11 @@ gradle-app.setting
 *.pem
 *.key
 config.json
+gitee_config.sh
+
+# distribution 目录是给 Gitee 应用内更新用的：APK 清单必须入库才能被手机下载
+# 这里单独放行该目录下的 APK，其余位置仍旧全部忽略
+!distribution/*.apk
 
 # IDE
 .idea/

@@ -89,6 +89,13 @@ class MainActivity : ComponentActivity() {
     /** 上次打开时的崩溃信息（有的话，下次启动直接显示出来） */
     private var lastCrash by mutableStateOf("")
 
+    /** 自动更新：检查到的新版本（null = 没有 / 还没查）。放 Activity 级，跨重组保持。 */
+    private var updateInfo by mutableStateOf<Updater.UpdateInfo?>(null)
+    /** 是否弹出「发现新版本」对话框 */
+    private var showUpdateDialog by mutableStateOf(false)
+    /** 下载中的进度文本（空 = 没在下载） */
+    private var updateProgress by mutableStateOf("")
+
     private fun crashFile() = java.io.File(filesDir, "last_crash.txt")
 
     private fun readCrashFile(): String {
@@ -158,6 +165,58 @@ class MainActivity : ComponentActivity() {
         "?"
     }
 
+    private fun versionCode(): Int = try {
+        packageManager.getPackageInfo(packageName, 0).versionCode
+    } catch (e: Exception) {
+        0
+    }
+
+    // ------------------------------------------------------------------
+    // 应用内自动更新
+    // ------------------------------------------------------------------
+
+    /** 检查是否有新版本。silent=true 时「已是最新」不弹提示，避免打扰。 */
+    private suspend fun checkUpdate(silent: Boolean = false) {
+        val result = Updater.check(versionCode())
+        result.onSuccess { info ->
+            if (info == null) {
+                if (!silent) log("✓ 已是最新版本（v${versionName()}）")
+            } else {
+                updateInfo = info
+                showUpdateDialog = true
+                log("发现新版本 v${info.versionName}，当前 v${versionName()}")
+            }
+        }.onFailure { e ->
+            // 静默检查失败很常见（没网/Gitee 抽风），别弹窗，只写日志
+            log("检查更新失败（不影响使用）：${e.message}")
+        }
+    }
+
+    /** 下载并调起安装。进度写进 updateProgress，显示在对话框上。 */
+    private suspend fun doUpdate(info: Updater.UpdateInfo) {
+        updateProgress = "正在连接…"
+        val result = Updater.download(this, info) { pct, bytes ->
+            val kb = bytes / 1024
+            updateProgress = if (pct >= 0) "正在下载… $pct%（${kb} KB）"
+                             else "正在下载… ${kb} KB"
+        }
+        result.onSuccess { file ->
+            updateProgress = "下载完成，正在打开安装界面…"
+            log("✓ 新版已下载，调起安装（大小 ${file.length() / 1024} KB）")
+            try {
+                Updater.install(this, file)
+                showUpdateDialog = false
+                updateProgress = ""
+            } catch (e: Exception) {
+                updateProgress = ""
+                log("✗ 调起安装失败：${e.message}")
+            }
+        }.onFailure { e ->
+            updateProgress = ""
+            log("✗ ${e.message}")
+        }
+    }
+
     private fun requiredPermissions(): Array<String> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
@@ -221,6 +280,12 @@ class MainActivity : ComponentActivity() {
                 loggedInState.value = false
                 log("✗ 登录已过期，请重新登录：${r.exceptionOrNull()?.message}")
             }
+        }
+
+        // 启动时静默检查更新（失败不打扰用户，只在日志里记一句）
+        lifecycleScope.launch {
+            delay(1500)
+            checkUpdate(silent = true)
         }
 
         setContent {
@@ -753,8 +818,9 @@ class MainActivity : ComponentActivity() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("B1 体脂秤 → Garmin", style = MaterialTheme.typography.headlineSmall,
                         modifier = Modifier.weight(1f))
-                    Text("v$version", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline)
+                    TextButton(onClick = { scope.launch { checkUpdate(silent = false) } }) {
+                        Text("v$version · 检查更新", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
                 Text(
                     if (loggedIn) "● Garmin 已登录" else "○ Garmin 未登录",
@@ -1466,6 +1532,45 @@ class MainActivity : ComponentActivity() {
                     },
                     dismissButton = {
                         TextButton(onClick = { askRepushAll = false }) { Text("先不用") }
+                    }
+                )
+            }
+
+            // 发现新版本：显示更新说明 + 下载进度，确认后下载并调起安装
+            if (showUpdateDialog && updateInfo != null) {
+                val info = updateInfo!!
+                AlertDialog(
+                    onDismissRequest = {
+                        // 下载中不允许点外面关掉，避免卡在半截
+                        if (updateProgress.isEmpty()) showUpdateDialog = false
+                    },
+                    title = { Text("发现新版本 v${info.versionName}") },
+                    text = {
+                        Column {
+                            Text("当前版本 v$version")
+                            Spacer(Modifier.height(8.dp))
+                            Text("更新内容：", style = MaterialTheme.typography.bodySmall)
+                            Text(info.notes.ifBlank { "（本次为常规更新）" })
+                            if (updateProgress.isNotEmpty()) {
+                                Spacer(Modifier.height(12.dp))
+                                Text(updateProgress, color = MaterialTheme.colorScheme.primary)
+                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = updateProgress.isEmpty(),
+                            onClick = {
+                                scope.launch { doUpdate(info) }
+                            }
+                        ) { Text("下载并更新") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            enabled = updateProgress.isEmpty(),
+                            onClick = { showUpdateDialog = false }
+                        ) { Text("稍后") }
                     }
                 )
             }
