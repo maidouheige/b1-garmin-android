@@ -293,6 +293,7 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 var showLogin by remember { mutableStateOf(false) }
                 var showSettings by remember { mutableStateOf(false) }
+                var showCalib by remember { mutableStateOf(false) }
                 val loggedIn by loggedInState
 
                 if (showSettings) {
@@ -335,6 +336,11 @@ class MainActivity : ComponentActivity() {
                             Icon(Icons.Default.Close, contentDescription = "关闭")
                         }
                     }
+                } else if (showCalib) {
+                    CalibScreen(
+                        loggedIn = loggedIn,
+                        onBack = { showCalib = false },
+                    )
                 } else {
                     MainScreen(
                         loggedIn = loggedIn,
@@ -342,6 +348,7 @@ class MainActivity : ComponentActivity() {
                         scope = scope,
                         version = versionName(),
                         profile = profileState.value,
+                        onOpenCalib = { showCalib = true },
                         btState = { btTick.value; scale.stateText() },
                         btReady = { btTick.value; scale.isBluetoothReady() },
                         btDiag = { btTick.value; scale.diagnose() },
@@ -780,34 +787,14 @@ class MainActivity : ComponentActivity() {
         btDiag: () -> String?,
         onWebLogin: () -> Unit,
         onOpenSettings: () -> Unit,
+        onOpenCalib: () -> Unit,
         onEnableBluetooth: () -> Unit,
         onRequestPermission: () -> Unit,
         onOpenAppSettings: () -> Unit,
     ) {
         var email by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
-        var calibKg by remember { mutableStateOf("") }
-        var calibBf by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
-        /** 校准完之后问用户：要不要把之前上传的记录也按新数值重传 */
-        var askRepushAll by remember { mutableStateOf(false) }
-        /**
-         * 「重新校准」的二次确认。这个按钮会解除固化、清零验证次数、可能改偏移，
-         * 属于会把校准推倒重来的操作，误触代价大，必须先问一句。
-         */
-        var askRecalibrate by remember { mutableStateOf(false) }
-        /** 重新校准确认框里要【重新输入】的阿福数值，和主输入框隔离，默认空 */
-        var recalKg by remember { mutableStateOf("") }
-        var recalBf by remember { mutableStateOf("") }
-        /** 校准/验证状态变了就自增，用来刷新那几行显示 */
-        var calibTick by remember { mutableStateOf(0) }
-        // 当前那台秤的校准状态（null = 该档还没校准过）
-        var offImp by remember(calibTick) {
-            mutableStateOf(calibOf(currentScaleAddr()).imp?.toFloat())
-        }
-        var offBmi by remember(calibTick) {
-            mutableStateOf(calibOf(currentScaleAddr()).bmi?.toFloat())
-        }
 
         Surface(Modifier.fillMaxSize()) {
             Column(
@@ -981,7 +968,7 @@ class MainActivity : ComponentActivity() {
                                     log("   光脚、脚底微湿、四个电极都踩到、站直别动，再称一次更容易出阻抗")
                                 } else if (calibOf(addr).imp == null) {
                                     log("⚠ 这次测到阻抗了，但「${target.name.ifBlank { "这台秤" }}」还没校准过，用的是通用方程的原始值")
-                                    log("   在下面「体脂率校准」里填阿福这次的体重和体脂率，点一次校准就能对齐")
+                                    log("   点「体脂率校准 / 验证」进去填阿福这次的体重和体脂率，点一次校准就能对齐")
                                 }
                                 var okCount = 0
                                 var skipCount = 0
@@ -1081,6 +1068,207 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 ) { Text(if (busy) "处理中…（最长 100 秒）" else "连接秤 → 称重并同步到 Garmin") }
 
+                // ---- 校准入口：低频功能，独立成页，首页只留一个按钮 ----
+                OutlinedButton(
+                    onClick = onOpenCalib,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("体脂率校准 / 验证 · 诊断工具 →") }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "第一次使用、或换秤、或发现差值变大时才需要进去；平时称重组不用管。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+
+Spacer(Modifier.height(16.dp))
+
+                // 上次崩溃的话，把现场显示出来（手机上抓不到 logcat，只能靠这个）
+                if (lastCrash.isNotBlank()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                "上次打开时崩了。把下面这段发给我就行：",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                lastCrash,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            TextButton(onClick = {
+                                try { crashFile().delete() } catch (e: Exception) {}
+                                lastCrash = ""
+                            }) { Text("清掉这段", style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                // ---------------- 结果 / 调试日志 ----------------
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("结果", style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f))
+                    TextButton(onClick = {
+                        auth.clear(); loggedInState.value = false
+                        summary = ""; log("已清除 Garmin 登录状态")
+                    }) { Text("退出登录") }
+                }
+
+                // 只显示结论：成功就一行，失败才需要展开细看
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(
+                            summary.ifBlank { "还没有操作。装好后先登录，再点「连接秤」。" },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = when {
+                                summary.startsWith("✗") -> MaterialTheme.colorScheme.error
+                                summary.startsWith("✓") -> MaterialTheme.colorScheme.primary
+                                summary.startsWith("⚠") -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                        // 正在做的那一步（实时），折叠状态下也能看到进度。
+                        // 跳过十六进制帧这类噪声行，只挑能看懂的那句
+                        fun isNoise(line: String): Boolean {
+                            var t = line.trimStart()
+                            if (t.startsWith("[+")) {
+                                val i = t.indexOf(']')
+                                if (i > 0) t = t.substring(i + 1).trimStart()
+                            }
+                            return t.startsWith("←") || t.startsWith("→") ||
+                                    t.startsWith("·") || line.startsWith("   ")
+                        }
+                        val live = logs.lastOrNull { !isNoise(it) }
+                        if (!live.isNullOrBlank() && live != summary) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                live, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline, maxLines = 2
+                            )
+                        }
+                    }
+                }
+
+                TextButton(
+                    onClick = { showDebug = !showDebug },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (showDebug) "▲ 收起调试日志（${logs.size} 行）"
+                        else "▼ 展开调试日志（${logs.size} 行）",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                if (showDebug) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text(
+                                logs.joinToString("\n"),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            TextButton(onClick = { logs.clear(); summary = "" }) {
+                                Text("清空日志", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 发现新版本：显示更新说明 + 下载进度，确认后下载并调起安装
+            if (showUpdateDialog && updateInfo != null) {
+                val info = updateInfo!!
+                AlertDialog(
+                    onDismissRequest = {
+                        // 下载中不允许点外面关掉，避免卡在半截
+                        if (updateProgress.isEmpty()) showUpdateDialog = false
+                    },
+                    title = { Text("发现新版本 v${info.versionName}") },
+                    text = {
+                        Column {
+                            Text("当前版本 v$version")
+                            Spacer(Modifier.height(8.dp))
+                            Text("更新内容：", style = MaterialTheme.typography.bodySmall)
+                            Text(info.notes.ifBlank { "（本次为常规更新）" })
+                            if (updateProgress.isNotEmpty()) {
+                                Spacer(Modifier.height(12.dp))
+                                Text(updateProgress, color = MaterialTheme.colorScheme.primary)
+                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = updateProgress.isEmpty(),
+                            onClick = {
+                                scope.launch { doUpdate(info) }
+                            }
+                        ) { Text("下载并更新") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            enabled = updateProgress.isEmpty(),
+                            onClick = { showUpdateDialog = false }
+                        ) { Text("稍后") }
+                    }
+                )
+            }
+        }
+    }
+
+    // ====================================================================
+    // 体脂率校准页（低频功能，从首页拆出）
+    // ====================================================================
+    @Composable
+    private fun CalibScreen(
+        loggedIn: Boolean,
+        onBack: () -> Unit,
+    ) {
+        val scope = rememberCoroutineScope()
+        var calibKg by remember { mutableStateOf("") }
+        var calibBf by remember { mutableStateOf("") }
+        var busy by remember { mutableStateOf(false) }
+        /** 校准完之后问用户：要不要把之前上传的记录也按新数值重传 */
+        var askRepushAll by remember { mutableStateOf(false) }
+        /** 「重新校准」二次确认：会把校准推倒重来，误触代价大，必须重新填数值确认 */
+        var askRecalibrate by remember { mutableStateOf(false) }
+        var recalKg by remember { mutableStateOf("") }
+        var recalBf by remember { mutableStateOf("") }
+        /** 校准/验证状态变了就自增，用来刷新那几行显示 */
+        var calibTick by remember { mutableStateOf(0) }
+        var offImp by remember(calibTick) {
+            mutableStateOf(calibOf(currentScaleAddr()).imp?.toFloat())
+        }
+        var offBmi by remember(calibTick) {
+            mutableStateOf(calibOf(currentScaleAddr()).bmi?.toFloat())
+        }
+
+        Surface(Modifier.fillMaxSize()) {
+            Box {
+                Column(
+                    Modifier
+                        .padding(16.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("体脂率校准 / 验证", style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier.weight(1f))
+                        TextButton(onClick = onBack) { Text("← 返回") }
+                    }
+                    Spacer(Modifier.height(10.dp))
                 // ---- 体脂率校准：通用 BIA 方程和厂家算法有系统偏差，用阿福的值对一次 ----
                 // 状态先算出来，下面的「当前该做什么」和按钮文案都要用
                 val anyCalibrated = offImp != null || offBmi != null
@@ -1092,8 +1280,14 @@ class MainActivity : ComponentActivity() {
                 val pvBf = calibBf.toDoubleOrNull()
                 val pvAnchor = pvKg?.let { findAnchor(it, currentScaleAddr()) }
 
-                Text("④ 体脂率校准（第一次弄一次，之后基本不用管）",
-                    style = MaterialTheme.typography.titleMedium)
+                Text("校准步骤", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "这一页只在你第一次使用、换秤、或发现体脂率跟阿福差得多时才需要。" +
+                            "平时称重同步请回首页，这里不用管。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+                Spacer(Modifier.height(6.dp))
 
                 // 「当前该做什么」：按状态直接给步骤，不用自己猜该按哪个
                 Surface(
@@ -1119,8 +1313,8 @@ class MainActivity : ComponentActivity() {
                                 !anyCalibrated ->
                                     "① 用阿福称一次，记下体重和体脂率\n" +
                                             "② 关掉阿福（后台也要划掉，它占着蓝牙）\n" +
-                                            "③ 点上面【连接秤 → 称重并同步到 Garmin】\n" +
-                                            "④ 在下面填阿福的体重和体脂率，再点下面的按钮"
+                                            "③ 回首页点【连接秤 → 称重并同步到 Garmin】一次\n" +
+                                            "④ 再回到这页，在下面填阿福的体重和体脂率，点下面的按钮"
                                 else ->
                                     "① 正常称重（阿福称一次 + 本 App 同步一次）\n" +
                                             "② 在下面填阿福这次的数值\n" +
@@ -1395,114 +1589,9 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("只扫描看看（诊断用）") }
 
-                Spacer(Modifier.height(16.dp))
-
-                // 上次崩溃的话，把现场显示出来（手机上抓不到 logcat，只能靠这个）
-                if (lastCrash.isNotBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(
-                                "上次打开时崩了。把下面这段发给我就行：",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                lastCrash,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            TextButton(onClick = {
-                                try { crashFile().delete() } catch (e: Exception) {}
-                                lastCrash = ""
-                            }) { Text("清掉这段", style = MaterialTheme.typography.bodySmall) }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-
-                // ---------------- 结果 / 调试日志 ----------------
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("结果", style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f))
-                    TextButton(onClick = {
-                        auth.clear(); loggedInState.value = false
-                        summary = ""; log("已清除 Garmin 登录状态")
-                    }) { Text("退出登录") }
-                }
-
-                // 只显示结论：成功就一行，失败才需要展开细看
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                        Text(
-                            summary.ifBlank { "还没有操作。装好后先登录，再点「连接秤」。" },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = when {
-                                summary.startsWith("✗") -> MaterialTheme.colorScheme.error
-                                summary.startsWith("✓") -> MaterialTheme.colorScheme.primary
-                                summary.startsWith("⚠") -> MaterialTheme.colorScheme.tertiary
-                                else -> MaterialTheme.colorScheme.onSurface
-                            }
-                        )
-                        // 正在做的那一步（实时），折叠状态下也能看到进度。
-                        // 跳过十六进制帧这类噪声行，只挑能看懂的那句
-                        fun isNoise(line: String): Boolean {
-                            var t = line.trimStart()
-                            if (t.startsWith("[+")) {
-                                val i = t.indexOf(']')
-                                if (i > 0) t = t.substring(i + 1).trimStart()
-                            }
-                            return t.startsWith("←") || t.startsWith("→") ||
-                                    t.startsWith("·") || line.startsWith("   ")
-                        }
-                        val live = logs.lastOrNull { !isNoise(it) }
-                        if (!live.isNullOrBlank() && live != summary) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                live, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.outline, maxLines = 2
-                            )
-                        }
-                    }
-                }
-
-                TextButton(
-                    onClick = { showDebug = !showDebug },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        if (showDebug) "▲ 收起调试日志（${logs.size} 行）"
-                        else "▼ 展开调试日志（${logs.size} 行）",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                if (showDebug) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(10.dp)) {
-                            Text(
-                                logs.joinToString("\n"),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            TextButton(onClick = { logs.clear(); summary = "" }) {
-                                Text("清空日志", style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
+                
                 }
             }
-
             // 重传确认框：会把 Garmin 上旧的那条删掉再传，属于不可逆操作，弹窗问清楚
             if (askRepushAll) {
                 AlertDialog(
@@ -1536,44 +1625,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            // 发现新版本：显示更新说明 + 下载进度，确认后下载并调起安装
-            if (showUpdateDialog && updateInfo != null) {
-                val info = updateInfo!!
-                AlertDialog(
-                    onDismissRequest = {
-                        // 下载中不允许点外面关掉，避免卡在半截
-                        if (updateProgress.isEmpty()) showUpdateDialog = false
-                    },
-                    title = { Text("发现新版本 v${info.versionName}") },
-                    text = {
-                        Column {
-                            Text("当前版本 v$version")
-                            Spacer(Modifier.height(8.dp))
-                            Text("更新内容：", style = MaterialTheme.typography.bodySmall)
-                            Text(info.notes.ifBlank { "（本次为常规更新）" })
-                            if (updateProgress.isNotEmpty()) {
-                                Spacer(Modifier.height(12.dp))
-                                Text(updateProgress, color = MaterialTheme.colorScheme.primary)
-                                LinearProgressIndicator(Modifier.fillMaxWidth())
-                            }
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(
-                            enabled = updateProgress.isEmpty(),
-                            onClick = {
-                                scope.launch { doUpdate(info) }
-                            }
-                        ) { Text("下载并更新") }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            enabled = updateProgress.isEmpty(),
-                            onClick = { showUpdateDialog = false }
-                        ) { Text("稍后") }
-                    }
-                )
-            }
         }
     }
+
 }
