@@ -71,7 +71,25 @@ class ScaleSession(
         class Char(val ch: BluetoothGattCharacteristic, val data: ByteArray) : Op()
     }
 
-    suspend fun run(age: Int, male: Boolean, targetKg: Double): List<Measurement> =
+    /**
+     * 跑一次称重会话。
+     *
+     * @param onLive 实时体重帧回调（人站上秤后会连续推送），运行在高优先级的 Binder 线程，
+     *               调用方若要更新 UI 必须自行切主线程。
+     * @param onImpedance 拿到有效阻抗时回调一次（同样在 Binder 线程）。
+     *
+     * 两个回调都有默认值，老调用方不受影响。
+     */
+    suspend fun run(
+        age: Int, male: Boolean, targetKg: Double,
+        onLive: (kg: Double, locked: Boolean) -> Unit = { _, _ -> },
+        onImpedance: (ohm: Double) -> Unit = { _ -> },
+        /**
+         * 待机监听模式：连上秤后长时间保持连接、等人上秤，而不是 20 秒没人就断开。
+         * 用于「打开 App 就自动待命、随时站上去称」的体验。上传完成后由调用方决定是否重连。
+         */
+        standby: Boolean = false,
+    ): List<Measurement> =
         suspendCancellableCoroutine { cont ->
 
             val results = LinkedHashMap<String, Measurement>()
@@ -290,6 +308,8 @@ class ScaleSession(
                 when (p) {
                     is AfuProtocol.Parsed.LiveWeight -> {
                         lastLiveGrams = p.weightGrams
+                        // 实时体重推给界面（Binder 线程回调，调用方负责切主线程）
+                        onLive(p.weightGrams / 1000.0, p.locked)
                         out("← ${shortUuid(ch.uuid)} [$hex]")
                         out("   实时体重 ${"%.2f".format(p.weightGrams / 1000.0)} kg" +
                                 if (p.locked) "  ✔ 已锁定" else "")
@@ -310,6 +330,8 @@ class ScaleSession(
                         if (p.valid) {
                             lastResistance = p.resistanceOhm
                             gotImpedance = true
+                            // 有效阻抗推给界面，实时算体脂（Binder 线程回调）
+                            onImpedance(p.resistanceOhm.toDouble())
                             // 阻抗帧比最终记录晚到的情况：把刚那条没阻抗的记录补上
                             if (gotFinal) {
                                 // 只补「刚那次」且目前还缺阻抗的记录，别误补历史记录
@@ -407,21 +429,29 @@ class ScaleSession(
                         return
                     }
 
-                    // 4. 只读到秤内历史、一直没人上秤：等满 20 秒收工。
+                    // 4. 只读到秤内历史、一直没人上秤：
+                    //    - 普通模式等满 20 秒收工（避免用户还没站上去就被动等太久）
+                    //    - 待机监听模式则一直保持连接等人上秤，只受下面的总超时约束
                     //    （旧逻辑是「有记录 + 静默 1.5 秒」就收工 —— 秤先吐历史的话，
                     //      用户还没站上去连接就断了，这次称重直接丢失。）
-                    if (!liveSeen && results.isNotEmpty() && now - sessionStart > 20000) {
+                    if (!standby && !liveSeen && results.isNotEmpty() && now - sessionStart > 20000) {
                         finish("会话结束：只读到秤里的历史记录，没等到你上秤")
                         return
                     }
+                    // 待机模式下：连上后如果只吐历史、一直没人上秤，给一个无限长的等待上限
+                    // 由外层监听循环的「有人上秤才处理」逻辑决定何时结束，这里不主动断。
+                    // （真正没人上秤时保持连接，用户随时站上去都能立刻捕获到实时重量）
 
-                    // 5. 一条帧都没收到
-                    if (!sawAnyFrame && now - sessionStart > FIRST_FRAME_TIMEOUT_MS) {
-                        finish("✗ ${FIRST_FRAME_TIMEOUT_MS / 1000} 秒内一条帧都没收到：命令可能没被秤接受")
+                    // 5. 一条帧都没收到（待机模式下也放宽，避免秤休眠时反复断连）
+                    if (!sawAnyFrame && now - sessionStart >
+                        (if (standby) 60_000L else FIRST_FRAME_TIMEOUT_MS)
+                    ) {
+                        finish("✗ ${(if (standby) 60 else FIRST_FRAME_TIMEOUT_MS / 1000)} 秒内一条帧都没收到：命令可能没被秤接受")
                         return
                     }
-                    // 6. 总超时
-                    if (now - sessionStart > SESSION_TIMEOUT_MS) {
+                    // 6. 总超时（待机模式放宽到 10 分钟，普通模式 100 秒）
+                    val limit = if (standby) 600_000L else SESSION_TIMEOUT_MS
+                    if (now - sessionStart > limit) {
                         finish("会话超时结束")
                         return
                     }

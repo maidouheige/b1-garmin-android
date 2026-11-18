@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -100,6 +101,26 @@ class MainActivity : ComponentActivity() {
     /** 下载中的进度文本（空 = 没在下载） */
     private var updateProgress by mutableStateOf("")
 
+    // ---------------- 首页实时称重（打开 App 自动待机监听，站上秤就跳数字）----------------
+    /** 最近一次实时体重（kg，0 = 还没上过秤）。跨重组保留，作为首页大卡片的主显示 */
+    private var liveKg by mutableStateOf(0.0)
+    /** 体重是否已锁定 */
+    private var liveLocked by mutableStateOf(false)
+    /** 最近拿到的阻抗（Ω，0 = 还没有） */
+    private var liveResistance by mutableStateOf(0.0)
+    /** 阻抗到手后用当前校准算出的体成分（null = 还没测出阻抗） */
+    private var liveEstimate by mutableStateOf<BodyComp.Estimate?>(null)
+    /** 当前阶段文字（待机/已连接/称量中/测量体脂中/完成/异常） */
+    private var livePhase by mutableStateOf("待机中")
+    /** 自动待机监听开关（首页可一键暂停，校准时要让位给阿福） */
+    private var autoListen by mutableStateOf(true)
+    /** 监听协程句柄，用于停止/重启 */
+    private var listenJob: kotlinx.coroutines.Job? = null
+    /** 本轮是否已经有人上过秤（用来判断新一次称重开始、清掉上一次的体成分） */
+    private var hasLiveThisRound = false
+    /** 进校准页前是否开着监听，返回时据此恢复 */
+    private var resumeListenAfterCalib = false
+
     private fun crashFile() = java.io.File(filesDir, "last_crash.txt")
 
     private fun readCrashFile(): String {
@@ -176,8 +197,208 @@ class MainActivity : ComponentActivity() {
     }
 
     // ------------------------------------------------------------------
-    // 应用内自动更新
+    // 自动待机监听：打开 App 就连上秤待命，站上去实时跳体重、出阻抗就算体脂
     // ------------------------------------------------------------------
+
+    /**
+     * 把一次会话拿到的记录上传 Garmin（复用原来的去重/台账/校准/锚点逻辑，一个字没改）。
+     * 实时称重和旧的手动按钮都走这里，保证两条路行为一致。
+     * @return “成功上传数” to “跳过数”
+     */
+    private suspend fun uploadRecords(
+        recs: List<ScaleSession.Measurement>,
+        addr: String,
+        targetName: String,
+    ): Pair<Int, Int> {
+        val h = profileState.value.heightCm
+        val a = profileState.value.age
+        var okCount = 0
+        var skipCount = 0
+        log("本次拿到 ${recs.size} 条记录（带阻抗 ${recs.count { it.resistanceOhm != null }} 条），开始上传…")
+        if (recs.none { it.resistanceOhm != null }) {
+            log("⚠ 这次没测到阻抗：体脂率只能按体重估算，反映不了真实体成分")
+            log("   光脚、脚底微湿、四个电极都踩到、站直别动，再称一次更容易出阻抗")
+        } else if (calibOf(addr).imp == null) {
+            log("⚠ 这次测到阻抗了，但「${targetName.ifBlank { "这台秤" }}」还没校准过，用的是通用方程的原始值")
+            log("   点「设置 → 体脂率校准」进去填阿福这次的体重和体脂率，点一次校准就能对齐")
+        }
+        recs.forEach { rec ->
+            val whenStr = java.text.SimpleDateFormat("MM-dd HH:mm")
+                .format(java.util.Date(rec.timestampSec * 1000))
+            val key = "${rec.timestampSec}-${Math.round(rec.weightKg * 1000)}"
+
+            var uploaded = false
+            if (ledger.getBoolean(key, false)) {
+                log("$whenStr ${rec.weightKg}kg（已同步过，跳过上传）")
+                skipCount++
+            } else if (!rec.fromHistory &&
+                prefs.getFloat("last_live_kg", 0f).let { lastKg ->
+                    lastKg > 0f &&
+                        Math.abs(rec.weightKg - lastKg) < 0.03 &&
+                        System.currentTimeMillis() / 1000 -
+                        prefs.getLong("last_live_at", 0L) < 300
+                }
+            ) {
+                log("$whenStr ${rec.weightKg}kg（5 分钟内刚同步过同一体重，跳过上传）")
+                skipCount++
+            } else {
+                uploaded = true
+            }
+
+            // 无论是否真的上传，都把这次称重记进验证台账
+            val rawBfForVerify = BodyComp.rawBf(
+                rec.weightKg, h, a, profileState.value.sexText, rec.resistanceOhm
+            ).first
+            val estForVerify = BodyComp.estimate(
+                rec.weightKg, h, a, profileState.value.sexText,
+                rec.resistanceOhm, savedOffsets(addr)
+            )
+            if (estForVerify != null) {
+                saveVerifyEntry(
+                    rec.timestampSec, rec.weightKg,
+                    rec.resistanceOhm ?: 0.0, rawBfForVerify,
+                    estForVerify.bodyFatPercent, addr
+                )
+            }
+            if (!uploaded) return@forEach
+
+            val est = BodyComp.estimate(
+                rec.weightKg, h, a, profileState.value.sexText,
+                rec.resistanceOhm, savedOffsets(addr)
+            )
+            if (est == null) {
+                log("$whenStr ${rec.weightKg}kg ✗ 体成分推算失败")
+                return@forEach
+            }
+            val fit = FitWriter.build(est, rec.timestampSec)
+            val up = auth.uploadFit(fit, "weight_${rec.timestampSec}.fit")
+            if (up.isSuccess) {
+                ledger.edit().putBoolean(key, true).apply()
+                prefs.edit()
+                    .putFloat("last_live_kg", rec.weightKg.toFloat())
+                    .putLong("last_live_at", System.currentTimeMillis() / 1000)
+                    .putLong("last_up_ts", rec.timestampSec)
+                    .putFloat("last_up_kg", rec.weightKg.toFloat())
+                    .putFloat("last_up_res", (rec.resistanceOhm ?: 0.0).toFloat())
+                    .putString("last_up_addr", addr)
+                    .apply()
+                saveAnchor(Anchor(rec.timestampSec, rec.weightKg,
+                    rec.resistanceOhm ?: 0.0, addr))
+                okCount++
+                log("$whenStr ${rec.weightKg}kg ✓ 已上传（体脂 %.1f%% · 肌肉 %.1fkg · 水分 %.1f%%）"
+                    .format(est.bodyFatPercent, est.muscleMassKg, est.percentHydration))
+            } else {
+                log("$whenStr ${rec.weightKg}kg ✗ ${up.exceptionOrNull()?.message}")
+            }
+            delay(300)
+        }
+        return okCount to skipCount
+    }
+
+    /** 启动自动监听（幂等） */
+    private fun startListen() {
+        if (listenJob?.isActive == true) return
+        listenJob = lifecycleScope.launch { autoWeighLoop() }
+    }
+
+    /** 停止自动监听，让出蓝牙给阿福 */
+    private fun stopListen() {
+        listenJob?.cancel()
+        listenJob = null
+        livePhase = "已暂停（点继续恢复自动称重）"
+    }
+
+    /**
+     * 自动监听主循环：找秤 → 连上待命 → 人站上去实时跳体重 → 阻抗到就算体脂 → 上传 → 断开 → 重来。
+     * 每轮之间留 2 秒，避免疯狂重连；蓝牙/权限/登录没就绪时会等待，不打扰用户。
+     */
+    private suspend fun autoWeighLoop() {
+        while (autoListen) {
+            // 蓝牙或权限没就绪就等着，10 秒后再试
+            val diag = scale.diagnose()
+            if (diag != null) {
+                livePhase = if (!scale.isBluetoothReady()) "请打开手机蓝牙" else "请授予蓝牙权限"
+                delay(3000)
+                continue
+            }
+
+            // 找秤（记住的优先，扫到就停）
+            val target = try {
+                scale.findScale(4000) { }
+            } catch (e: Exception) {
+                delay(2000)
+                null
+            }
+            if (target == null) {
+                livePhase = "在找秤…（轻踩一下秤唤醒它）"
+                delay(2000)
+                continue
+            }
+            if (!autoListen) break
+
+            scale.remember(target)
+            val addr = target.address
+            prefs.edit()
+                .putString("cur_scale_addr", addr)
+                .putString("cur_scale_name", target.name.ifBlank { "这台秤" })
+                .apply()
+            if (calibOf(addr).name.isBlank()) {
+                saveCalibOf(addr, calibOf(addr).copy(name = target.name.ifBlank { addr.take(8) }))
+            }
+            hasLiveThisRound = false
+            livePhase = "已连上秤，光脚站上去就开始称重"
+
+            val h = profileState.value.heightCm
+            val a = profileState.value.age
+            val male = profileState.value.male
+            val targetKg = profileState.value.targetKg.takeIf { it > 0.0 }
+                ?: (h * h * 22.0 / 10000.0)
+
+            try {
+                val recs = ScaleSession(this@MainActivity, target, { log(it) }).run(
+                    a, male, targetKg,
+                    onLive = { kg, locked ->
+                        // BLE 回调在 Binder 线程，必须切主线程更新 Compose 状态
+                        ui.post {
+                            if (!hasLiveThisRound) {
+                                hasLiveThisRound = true
+                                liveEstimate = null
+                                liveResistance = 0.0
+                            }
+                            liveKg = kg
+                            liveLocked = locked
+                            livePhase = if (locked) "体重已锁定 · 光脚站稳别动，等体脂" else "正在称重…"
+                        }
+                    },
+                    onImpedance = { ohm ->
+                        ui.post {
+                            liveResistance = ohm
+                            liveEstimate = BodyComp.estimate(
+                                liveKg, h, a, profileState.value.sexText, ohm, savedOffsets(addr)
+                            )
+                            livePhase = "✓ 体成分已算出，数据已更新"
+                        }
+                    },
+                    standby = true,
+                )
+
+                if (recs.isNotEmpty()) {
+                    val (ok, _) = uploadRecords(recs, addr, target.name)
+                    ui.post {
+                        livePhase = if (ok > 0) "✓ 已同步 $ok 条到 Garmin" else "✓ 称重完成"
+                    }
+                } else if (hasLiveThisRound) {
+                    ui.post { livePhase = "这次没拿到完整数据，请再站一次" }
+                }
+            } catch (e: Exception) {
+                log("✗ 监听出错：${e.message}")
+                ui.post { livePhase = "连接出错，稍后自动重试" }
+            }
+
+            delay(2000) // 秤断开后缓一下再重连
+        }
+        ui.post { livePhase = "自动称重已停止" }
+    }
 
     /** 检查是否有新版本。silent=true 时「已是最新」不弹提示，避免打扰。 */
     private suspend fun checkUpdate(silent: Boolean = false) {
@@ -269,6 +490,10 @@ class MainActivity : ComponentActivity() {
 
         askPermissions()
 
+        // 打开 App 就自动进入称重待机：连上秤、等人站上去。
+        // 权限是异步授予的，autoWeighLoop 内部会等蓝牙/权限就绪，不会卡死。
+        startListen()
+
         // 启动时静默续期：access_token 只有约 1 天寿命，用 refresh_token 自动换新的，
         // 这样只要偶尔开一次 App 就永远不会掉登录
         lifecycleScope.launch {
@@ -297,9 +522,26 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 var showLogin by remember { mutableStateOf(false) }       // 网页登录 WebView
                 var showLoginPage by remember { mutableStateOf(false) }   // 登录页（账号/密码输入）
-                var showSettings by remember { mutableStateOf(false) }
+                var showSettings by remember { mutableStateOf(false) }    // 资料编辑页
+                var showSettingsHub by remember { mutableStateOf(false) } // 设置中心（账户/蓝牙/资料/校准/关于）
                 var showCalib by remember { mutableStateOf(false) }
                 val loggedIn by loggedInState
+
+                // 系统侧滑/返回键：有子页面就逐层返回，只有在首页才退出 App。
+                // 依赖 BackHandler 的 enabled 条件：任一子页打开时接管返回事件。
+                BackHandler(enabled = showLogin || showLoginPage || showSettings ||
+                        showSettingsHub || showCalib) {
+                    when {
+                        showLogin -> showLogin = false
+                        showLoginPage -> showLoginPage = false
+                        showSettings -> showSettings = false
+                        showCalib -> {
+                            showCalib = false
+                            if (resumeListenAfterCalib) startListen()
+                        }
+                        showSettingsHub -> showSettingsHub = false
+                    }
+                }
 
                 if (showSettings) {
                     SettingsScreen(
@@ -308,9 +550,10 @@ class MainActivity : ComponentActivity() {
                             ProfileStore.save(this, p)
                             profileState.value = p
                             showSettings = false
+                            showSettingsHub = true
                             log("✓ 资料已保存：身高 %.1fcm · %s · %d岁".format(p.heightCm, p.sexLabel, p.age))
                         },
-                        onClose = { showSettings = false }
+                        onClose = { showSettings = false; showSettingsHub = true }
                     )
                 } else if (showLogin) {
                     val web = remember {
@@ -320,6 +563,7 @@ class MainActivity : ComponentActivity() {
                                 log("抓到 ticket（长度 ${ticket.length}），正在换取 token…")
                                 showLogin = false
                                 showLoginPage = false
+                                showSettingsHub = false
                                 scope.launch {
                                     val r = auth.exchangeTicket(ticket)
                                     loggedInState.value = r.isSuccess
@@ -347,25 +591,32 @@ class MainActivity : ComponentActivity() {
                         loggedIn = loggedIn,
                         loggedInState = loggedInState,
                         onWebLogin = { showLogin = true },
-                        onBack = { showLoginPage = false },
+                        onBack = { showLoginPage = false; showSettingsHub = true },
                     )
                 } else if (showCalib) {
                     CalibScreen(
                         loggedIn = loggedIn,
-                        onBack = { showCalib = false },
+                        onBack = {
+                            showCalib = false
+                            if (resumeListenAfterCalib) startListen()
+                        },
                     )
-                } else {
-                    MainScreen(
-                        loggedIn = loggedIn,
-                        scope = scope,
+                } else if (showSettingsHub) {
+                    SettingsHubScreen(
                         version = versionName(),
-                        profile = profileState.value,
-                        onOpenCalib = { showCalib = true },
+                        loggedIn = loggedIn,
+                        onBack = { showSettingsHub = false },
+                        onOpenProfile = { showSettings = true },
+                        onOpenLogin = { showLoginPage = true },
+                        onOpenCalib = {
+                            // 校准要先用阿福称一次，我们的监听占着 BLE 会连不上 → 暂停让位
+                            resumeListenAfterCalib = autoListen
+                            stopListen()
+                            showCalib = true
+                        },
                         btState = { btTick.value; scale.stateText() },
                         btReady = { btTick.value; scale.isBluetoothReady() },
                         btDiag = { btTick.value; scale.diagnose() },
-                        onOpenLogin = { showLoginPage = true },
-                        onOpenSettings = { showSettings = true },
                         onEnableBluetooth = {
                             if (scale.isBluetoothReady()) {
                                 log("蓝牙已经是开着的")
@@ -384,14 +635,59 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenAppSettings = {
                             try {
-                                val i = android.content.Intent(
+                                val intent = android.content.Intent(
                                     android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
                                 ).setData(android.net.Uri.parse("package:$packageName"))
-                                startActivity(i)
+                                startActivity(intent)
                                 log("已打开本应用的系统设置，请把「附近的设备」权限改成允许")
                             } catch (e: Exception) {
                                 log("✗ 打不开设置：${e.message}")
                             }
+                        },
+                        onCheckUpdate = { scope.launch { checkUpdate(silent = false) } },
+                    )
+                } else {
+                    MainScreen(
+                        version = versionName(),
+                        autoListen = autoListen,
+                        onToggleListen = {
+                            autoListen = !autoListen
+                            if (autoListen) startListen() else stopListen()
+                        },
+                        onOpenSettings = { showSettingsHub = true },
+                    )
+                }
+
+                // 更新弹窗放导航外层：在首页或设置页点「检查更新」都能看到
+                if (showUpdateDialog && updateInfo != null) {
+                    val info = updateInfo!!
+                    AlertDialog(
+                        onDismissRequest = {
+                            if (updateProgress.isEmpty()) showUpdateDialog = false
+                        },
+                        title = { Text("发现新版本 v${info.versionName}") },
+                        text = {
+                            Column {
+                                Text("当前版本 v${versionName()}")
+                                Spacer(Modifier.height(8.dp))
+                                Text("更新内容：", style = MaterialTheme.typography.bodySmall)
+                                Text(info.notes.ifBlank { "（本次为常规更新）" })
+                                if (updateProgress.isNotEmpty()) {
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(updateProgress, color = MaterialTheme.colorScheme.primary)
+                                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(enabled = updateProgress.isEmpty(),
+                                onClick = { scope.launch { doUpdate(info) } }
+                            ) { Text("下载并更新") }
+                        },
+                        dismissButton = {
+                            TextButton(enabled = updateProgress.isEmpty(),
+                                onClick = { showUpdateDialog = false }
+                            ) { Text("稍后") }
                         }
                     )
                 }
@@ -789,290 +1085,154 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun MainScreen(
-        loggedIn: Boolean,
-        scope: kotlinx.coroutines.CoroutineScope,
         version: String,
-        profile: Profile,
-        btState: () -> String,
-        btReady: () -> Boolean,
-        btDiag: () -> String?,
-        onOpenLogin: () -> Unit,
+        autoListen: Boolean,
+        onToggleListen: () -> Unit,
         onOpenSettings: () -> Unit,
-        onOpenCalib: () -> Unit,
-        onEnableBluetooth: () -> Unit,
-        onRequestPermission: () -> Unit,
-        onOpenAppSettings: () -> Unit,
     ) {
-        var busy by remember { mutableStateOf(false) }
-
+        val scope = rememberCoroutineScope()
         Surface(Modifier.fillMaxSize()) {
             Column(
                 Modifier
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
+                // ---------------- 顶栏 ----------------
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("B1 体脂秤 → Garmin", style = MaterialTheme.typography.headlineSmall,
+                    Text("B1 体脂秤 → Garmin", style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.weight(1f))
-                    TextButton(onClick = { scope.launch { checkUpdate(silent = false) } }) {
-                        Text("v$version · 检查更新", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                // ---------------- 登录状态 + 入口（输入区已移到独立登录页）----------------
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        if (loggedIn) "● Garmin 已登录" else "○ Garmin 未登录",
-                        color = if (loggedIn) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedButton(
-                        onClick = onOpenLogin,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Person, contentDescription = null,
-                            modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (loggedIn) "账户" else "登录")
-                    }
-                }
-                Text(
-                    "蓝牙：" + btState(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (btReady()) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error
-                )
-                Spacer(Modifier.height(16.dp))
-
-                // ---------------- 蓝牙 ----------------
-                Text("① 蓝牙与权限", style = MaterialTheme.typography.titleMedium)
-                val diag = btDiag()
-                if (diag != null) {
-                    Text(
-                        "⚠ $diag",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                } else {
-                    Text(
-                        "✓ 蓝牙和权限都正常，可以扫描",
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                Row {
-                    Button(onClick = onEnableBluetooth, modifier = Modifier.weight(1f)) {
-                        Text(if (btReady()) "蓝牙已开" else "打开蓝牙")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = onRequestPermission, modifier = Modifier.weight(1f)) {
-                        Text("授权蓝牙权限")
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                OutlinedButton(
-                    onClick = { onOpenAppSettings() },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("权限被拒过？去系统设置手动开") }
-                Text(
-                    "用法：先彻底关掉阿福 App（后台也要划掉），否则它占着连接。" +
-                            "然后点下面的按钮，会连上秤并提示你站上去称一次，" +
-                            "同时把秤里存的历史记录一起读出来。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Spacer(Modifier.height(16.dp))
-
-                // ---------------- 同步 ----------------
-                Text("② 连接秤并同步", style = MaterialTheme.typography.titleMedium)
-
-                // 身高/年龄/性别只读展示；资料设置 + 校准两个小按钮并排（低频，不占大块）
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "身高 %.1fcm · %s · %d岁".format(profile.heightCm, profile.sexLabel, profile.age),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f)
-                    )
                     OutlinedButton(
                         onClick = onOpenSettings,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
                         Icon(Icons.Default.Settings, contentDescription = null,
-                            modifier = Modifier.size(15.dp))
+                            modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("资料设置", style = MaterialTheme.typography.labelMedium)
+                        Text("设置", style = MaterialTheme.typography.bodySmall)
                     }
-                    Spacer(Modifier.width(6.dp))
-                    OutlinedButton(
-                        onClick = onOpenCalib,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                }
+                Text("v$version · 打开就自动称重，站上秤即可", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(12.dp))
+
+                // ---------------- 实时称重大屏（首页最显眼）----------------
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null,
-                            modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("校准", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-                if (profile.targetKg > 0) {
-                    Text(
-                        "参考体重 %.1f kg（只发给秤用，不影响上传的数据）".format(profile.targetKg),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                }
-
-                Button(
-                    onClick = {
-                        scope.launch {
-                            busy = true; showDebug = false
-                            try {
-                                if (!loggedIn) { log("✗ 请先登录 Garmin"); return@launch }
-                                scale.diagnose()?.let { log("✗ $it"); return@launch }
-
-                                log("正在找秤（扫到就停，通常 1~2 秒）…")
-                                val tFind = System.currentTimeMillis()
-                                val target = scale.findScale(4000) { d -> log("发现：" + d.display) }
-                                if (target == null) {
-                                    log("✗ 没扫到秤：确认蓝牙已开、手机贴近秤、轻踩一下唤醒它再试")
-                                    return@launch
-                                }
-                                scale.remember(target)
-                                // 记下当前用的是哪台秤：校准值、锚点、验证样本都跟着它走
-                                val addr = target.address
-                                prefs.edit()
-                                    .putString("cur_scale_addr", addr)
-                                    .putString("cur_scale_name", target.name.ifBlank { "这台秤" })
-                                    .apply()
-                                if (calibOf(addr).name.isBlank()) {
-                                    saveCalibOf(addr, calibOf(addr).copy(
-                                        name = target.name.ifBlank { addr.take(8) }))
-                                }
-                                log("✓ 找到 " + target.display +
-                                        "（用时 ${"%.1f".format((System.currentTimeMillis() - tFind) / 1000.0)} 秒）")
-
-                                val h = profile.heightCm
-                                val a = profile.age
-                                val male = profile.male
-                                // 秤只用目标体重做基准：优先用用户设的，没设就按 BMI 22 推算
-                                val targetKg = profile.targetKg.takeIf { it > 0.0 }
-                                    ?: (h * h * 22.0 / 10000.0)
-                                val recs = ScaleSession(this@MainActivity, target) { log(it) }
-                                    .run(a, male, targetKg)
-                                if (recs.isEmpty()) {
-                                    log("提示：这次没拿到数据集。站上秤后要等 8~10 秒，")
-                                    log("      光脚、脚微湿更容易测出阻抗（体成分）。")
-                                    return@launch
-                                }
-                                log("本次拿到 ${recs.size} 条记录（带阻抗 ${recs.count { it.resistanceOhm != null }} 条），开始上传…")
-                                if (recs.none { it.resistanceOhm != null }) {
-                                    log("⚠ 这次没测到阻抗：体脂率只能按体重估算，反映不了真实体成分")
-                                    log("   光脚、脚底微湿、四个电极都踩到、站直别动，再称一次更容易出阻抗")
-                                } else if (calibOf(addr).imp == null) {
-                                    log("⚠ 这次测到阻抗了，但「${target.name.ifBlank { "这台秤" }}」还没校准过，用的是通用方程的原始值")
-                                    log("   点「体脂率校准 / 验证」进去填阿福这次的体重和体脂率，点一次校准就能对齐")
-                                }
-                                var okCount = 0
-                                var skipCount = 0
-                                recs.forEach { rec ->
-                                    val whenStr = java.text.SimpleDateFormat("MM-dd HH:mm")
-                                        .format(java.util.Date(rec.timestampSec * 1000))
-                                    val key = "${rec.timestampSec}-${Math.round(rec.weightKg * 1000)}"
-
-                                    // 是否已上传过（用于决定是否写 Garmin）。
-                                    // 关键修复(v0.11.3)：「写不写 Garmin」和「记不记验证台账」必须解耦。
-                                    // 验证需要连续 3 次样本，而用户为了验证常常连着称、体重几乎一样，
-                                    // 旧逻辑把这些被去重跳过的记录直接 return，导致台账里没有新样本，
-                                    // 点「对比阿福数据」就报「那次还没同步过」，永远凑不满 3 次。
-                                    var uploaded = false
-                                    if (ledger.getBoolean(key, false)) {
-                                        log("$whenStr ${rec.weightKg}kg（已同步过，跳过上传）")
-                                        skipCount++
-                                    } else if (!rec.fromHistory &&
-                                        prefs.getFloat("last_live_kg", 0f).let { lastKg ->
-                                            lastKg > 0f &&
-                                                Math.abs(rec.weightKg - lastKg) < 0.03 &&
-                                                System.currentTimeMillis() / 1000 -
-                                                    prefs.getLong("last_live_at", 0L) < 300
-                                        }
-                                    ) {
-                                        // 5 分钟内同一体重（±30g）不重复上传，避免 Garmin 里刷屏
-                                        log("$whenStr ${rec.weightKg}kg（5 分钟内刚同步过同一体重，跳过上传）")
-                                        skipCount++
-                                    } else {
-                                        uploaded = true
-                                    }
-
-                                    // 无论是否真的上传，都把这次称重记进验证台账。
-                                    // 用当前校准值算 calcBf —— 这正是「我们现在的标准」给出的值，
-                                    // 拿来和阿福对比才有意义。这样连称几次也能凑齐验证样本。
-                                    val rawBfForVerify = BodyComp.rawBf(
-                                        rec.weightKg, h, a, profile.sexText, rec.resistanceOhm
-                                    ).first
-                                    val estForVerify = BodyComp.estimate(
-                                        rec.weightKg, h, a, profile.sexText,
-                                        rec.resistanceOhm, savedOffsets(addr)
-                                    )
-                                    if (estForVerify != null) {
-                                        saveVerifyEntry(
-                                            rec.timestampSec, rec.weightKg,
-                                            rec.resistanceOhm ?: 0.0, rawBfForVerify,
-                                            estForVerify.bodyFatPercent, addr
-                                        )
-                                    }
-
-                                    if (!uploaded) return@forEach
-
-                                    val est = BodyComp.estimate(
-                                        rec.weightKg, h, a, profile.sexText,
-                                        rec.resistanceOhm, savedOffsets(addr)
-                                    )
-                                    if (est == null) {
-                                        log("$whenStr ${rec.weightKg}kg ✗ 体成分推算失败")
-                                        return@forEach
-                                    }
-                                    val fit = FitWriter.build(est, rec.timestampSec)
-                                    val up = auth.uploadFit(fit, "weight_${rec.timestampSec}.fit")
-                                    if (up.isSuccess) {
-                                        ledger.edit().putBoolean(key, true).apply()
-                                        prefs.edit()
-                                            .putFloat("last_live_kg", rec.weightKg.toFloat())
-                                            .putLong("last_live_at", System.currentTimeMillis() / 1000)
-                                            // 供「校准后修正已上传记录」使用：完整记住这次上传的东西
-                                            .putLong("last_up_ts", rec.timestampSec)
-                                            .putFloat("last_up_kg", rec.weightKg.toFloat())
-                                            .putFloat("last_up_res", (rec.resistanceOhm ?: 0.0).toFloat())
-                                            .putString("last_up_addr", addr)
-                                            .apply()
-                                        // 锚点库：记下这条（含阻抗），以后校准可以直接拿它当锚点
-                                        saveAnchor(Anchor(rec.timestampSec, rec.weightKg,
-                                            rec.resistanceOhm ?: 0.0, addr))
-                                        // 验证台账已在上面统一写入（无论是否上传），这里不再重复
-                                        okCount++
-                                        log("$whenStr ${rec.weightKg}kg ✓ 已上传（体脂 %.1f%% · 肌肉 %.1fkg · 水分 %.1f%%）"
-                                            .format(est.bodyFatPercent, est.muscleMassKg, est.percentHydration))
-                                    } else {
-                                        log("$whenStr ${rec.weightKg}kg ✗ ${up.exceptionOrNull()?.message}")
-                                    }
-                                    delay(300)
-                                }
-                                log("完成：上传 $okCount 条" +
-                                        (if (skipCount > 0) "，跳过 $skipCount 条重复" else "") +
-                                        "。1~5 分钟后去 Garmin Connect 核对")
-                            } catch (e: Exception) {
-                                log("✗ 出错：${e.message}")
-                            } finally {
-                                busy = false
+                        // 阶段状态 + 暂停/继续开关
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                livePhase,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = onToggleListen,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(if (autoListen) "暂停" else "继续",
+                                    style = MaterialTheme.typography.labelMedium)
                             }
                         }
-                    },
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(if (busy) "处理中…（最长 100 秒）" else "连接秤 → 称重并同步到 Garmin") }
+                        Spacer(Modifier.height(6.dp))
 
-Spacer(Modifier.height(16.dp))
+                        // 大号体重数字，和秤同步跳动
+                        Text(
+                            if (liveKg > 0) "%.2f".format(liveKg) else "--.--",
+                            style = MaterialTheme.typography.displayLarge,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("kg", style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            if (liveLocked) {
+                                Spacer(Modifier.width(8.dp))
+                                Text("● 已锁定", style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+
+                        // 拿到阻抗后：体脂率等算出来的数据
+                        val est = liveEstimate
+                        if (est != null) {
+                            Spacer(Modifier.height(14.dp))
+                            androidx.compose.material3.HorizontalDivider(
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Row(Modifier.fillMaxWidth()) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("体脂率", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    Text("%.1f%%".format(est.bodyFatPercent),
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text("BMI", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    Text("%.1f".format(est.bmi),
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(Modifier.fillMaxWidth()) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("肌肉量", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    Text("%.1f kg".format(est.muscleMassKg),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text("体水分", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    Text("%.1f%%".format(est.percentHydration),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(Modifier.fillMaxWidth()) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("骨量", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    Text("%.1f kg".format(est.boneMassKg),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text("基础代谢", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    Text("${est.basalMet} kcal", style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                            }
+                            // 阻抗值放最后
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "阻抗 %.0f Ω".format(liveResistance),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
+                        } else if (liveKg > 0) {
+                            Spacer(Modifier.height(10.dp))
+                            Text("光脚站稳，等 8~12 秒测出阻抗后显示体成分",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
 
                 // 上次崩溃的话，把现场显示出来（手机上抓不到 logcat，只能靠这个）
                 if (lastCrash.isNotBlank()) {
@@ -1101,10 +1261,8 @@ Spacer(Modifier.height(16.dp))
                     Spacer(Modifier.height(8.dp))
                 }
 
-                // ---------------- 结果 / 调试日志（退出登录已移到账户页）----------------
+                // ---------------- 结果 / 调试日志 ----------------
                 Text("结果", style = MaterialTheme.typography.titleMedium)
-
-                // 只显示结论：成功就一行，失败才需要展开细看
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = MaterialTheme.shapes.medium,
@@ -1112,7 +1270,7 @@ Spacer(Modifier.height(16.dp))
                 ) {
                     Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         Text(
-                            summary.ifBlank { "还没有操作。装好后先登录，再点「连接秤」。" },
+                            summary.ifBlank { "站上秤后数据会自动出现在这里，并同步到 Garmin。" },
                             style = MaterialTheme.typography.bodyMedium,
                             color = when {
                                 summary.startsWith("✗") -> MaterialTheme.colorScheme.error
@@ -1121,13 +1279,11 @@ Spacer(Modifier.height(16.dp))
                                 else -> MaterialTheme.colorScheme.onSurface
                             }
                         )
-                        // 正在做的那一步（实时），折叠状态下也能看到进度。
-                        // 跳过十六进制帧这类噪声行，只挑能看懂的那句
                         fun isNoise(line: String): Boolean {
                             var t = line.trimStart()
                             if (t.startsWith("[+")) {
-                                val i = t.indexOf(']')
-                                if (i > 0) t = t.substring(i + 1).trimStart()
+                                val idx = t.indexOf(']')
+                                if (idx > 0) t = t.substring(idx + 1).trimStart()
                             }
                             return t.startsWith("←") || t.startsWith("→") ||
                                     t.startsWith("·") || line.startsWith("   ")
@@ -1135,25 +1291,17 @@ Spacer(Modifier.height(16.dp))
                         val live = logs.lastOrNull { !isNoise(it) }
                         if (!live.isNullOrBlank() && live != summary) {
                             Spacer(Modifier.height(4.dp))
-                            Text(
-                                live, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.outline, maxLines = 2
-                            )
+                            Text(live, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline, maxLines = 2)
                         }
                     }
                 }
-
-                TextButton(
-                    onClick = { showDebug = !showDebug },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        if (showDebug) "▲ 收起调试日志（${logs.size} 行）"
+                TextButton(onClick = { showDebug = !showDebug },
+                    modifier = Modifier.fillMaxWidth()) {
+                    Text(if (showDebug) "▲ 收起调试日志（${logs.size} 行）"
                         else "▼ 展开调试日志（${logs.size} 行）",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                        style = MaterialTheme.typography.bodySmall)
                 }
-
                 if (showDebug) {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -1161,10 +1309,7 @@ Spacer(Modifier.height(16.dp))
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(Modifier.padding(10.dp)) {
-                            Text(
-                                logs.joinToString("\n"),
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                            Text(logs.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = { logs.clear(); summary = "" }) {
                                 Text("清空日志", style = MaterialTheme.typography.bodySmall)
                             }
@@ -1173,43 +1318,205 @@ Spacer(Modifier.height(16.dp))
                 }
             }
 
-            // 发现新版本：显示更新说明 + 下载进度，确认后下载并调起安装
-            if (showUpdateDialog && updateInfo != null) {
-                val info = updateInfo!!
-                AlertDialog(
-                    onDismissRequest = {
-                        // 下载中不允许点外面关掉，避免卡在半截
-                        if (updateProgress.isEmpty()) showUpdateDialog = false
-                    },
-                    title = { Text("发现新版本 v${info.versionName}") },
-                    text = {
-                        Column {
-                            Text("当前版本 v$version")
-                            Spacer(Modifier.height(8.dp))
-                            Text("更新内容：", style = MaterialTheme.typography.bodySmall)
-                            Text(info.notes.ifBlank { "（本次为常规更新）" })
-                            if (updateProgress.isNotEmpty()) {
-                                Spacer(Modifier.height(12.dp))
-                                Text(updateProgress, color = MaterialTheme.colorScheme.primary)
-                                LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+    }
+
+    // ====================================================================
+    // 设置中心：账户 / 蓝牙权限 / 个人资料 / 校准 / 关于，全部收进一个页面
+    // ====================================================================
+    @Composable
+    private fun SettingsHubScreen(
+        version: String,
+        loggedIn: Boolean,
+        onBack: () -> Unit,
+        onOpenProfile: () -> Unit,
+        onOpenLogin: () -> Unit,
+        onOpenCalib: () -> Unit,
+        btState: () -> String,
+        btReady: () -> Boolean,
+        btDiag: () -> String?,
+        onEnableBluetooth: () -> Unit,
+        onRequestPermission: () -> Unit,
+        onOpenAppSettings: () -> Unit,
+        onCheckUpdate: () -> Unit,
+    ) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = onBack,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null,
+                            modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("返回")
+                    }
+                    Text("设置", style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(12.dp))
+
+                // ---------------- 账户 ----------------
+                Text("账户", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            if (loggedIn) "● Garmin 已登录（国际版）" else "○ Garmin 未登录",
+                            color = if (loggedIn) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onOpenLogin, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Person, contentDescription = null,
+                                modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (loggedIn) "管理账户 / 退出登录" else "登录 Garmin")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // ---------------- 蓝牙与权限 ----------------
+                Text("蓝牙与权限", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "蓝牙：" + btState(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (btReady()) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                        )
+                        val diag = btDiag()
+                        Text(
+                            diag ?: "✓ 蓝牙和权限都正常",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (diag == null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            OutlinedButton(onClick = onEnableBluetooth,
+                                modifier = Modifier.weight(1f)) {
+                                Text(if (btReady()) "蓝牙已开" else "打开蓝牙")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(onClick = onRequestPermission,
+                                modifier = Modifier.weight(1f)) {
+                                Text("授权权限")
                             }
                         }
-                    },
-                    confirmButton = {
-                        TextButton(
-                            enabled = updateProgress.isEmpty(),
-                            onClick = {
-                                scope.launch { doUpdate(info) }
-                            }
-                        ) { Text("下载并更新") }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            enabled = updateProgress.isEmpty(),
-                            onClick = { showUpdateDialog = false }
-                        ) { Text("稍后") }
+                        Spacer(Modifier.height(4.dp))
+                        TextButton(onClick = onOpenAppSettings,
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text("权限被拒过？去系统设置手动开",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            "一般不用动：打开 App 会自动连秤。若连不上，先彻底关掉阿福 App（后台也划掉），" +
+                                    "它占着蓝牙时我们连不上。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
                     }
-                )
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // ---------------- 个人资料 ----------------
+                Text("个人资料", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "身高 %.1fcm · %s · %d岁".format(
+                                profileState.value.heightCm,
+                                profileState.value.sexLabel,
+                                profileState.value.age
+                            ),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (profileState.value.targetKg > 0) {
+                            Text(
+                                "参考体重 %.1f kg（只发给秤用）".format(profileState.value.targetKg),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onOpenProfile, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Settings, contentDescription = null,
+                                modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("编辑身高 / 年龄 / 性别")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // ---------------- 体脂率校准 ----------------
+                Text("体脂率校准（低频，平时不用管）", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "第一次使用、换秤、或发现体脂率跟阿福差得多时才需要进去。" +
+                                    "校准时会自动暂停称重，让位给阿福。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onOpenCalib, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Refresh, contentDescription = null,
+                                modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("校准 / 验证 / 诊断工具")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // ---------------- 关于 ----------------
+                Text("关于", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("当前版本 v$version", style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth()) {
+                            Text("检查更新")
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "非官方个人项目，与蚂蚁集团 / 薄荷健康 / Garmin 无关联。" +
+                                    "体脂为 BIA 估算值，仅供日常参考。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
@@ -1276,7 +1583,7 @@ Spacer(Modifier.height(16.dp))
                 Text("校准步骤", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "这一页只在你第一次使用、换秤、或发现体脂率跟阿福差得多时才需要。" +
-                            "平时称重同步请回首页，这里不用管。",
+                            "平时称重不用管这里，回首页站着称即可，数据会自动同步。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -1306,10 +1613,10 @@ Spacer(Modifier.height(16.dp))
                                 !anyCalibrated ->
                                     "① 用阿福称一次，记下体重和体脂率\n" +
                                             "② 关掉阿福（后台也要划掉，它占着蓝牙）\n" +
-                                            "③ 回首页点【连接秤 → 称重并同步到 Garmin】一次\n" +
+                                            "③ 回到首页站着称一次（现在打开 App 就自动称重，不用点按钮）\n" +
                                             "④ 再回到这页，在下面填阿福的体重和体脂率，点下面的按钮"
                                 else ->
-                                    "① 正常称重（阿福称一次 + 本 App 同步一次）\n" +
+                                    "① 正常称重（阿福称一次 + 首页自动称重一次）\n" +
                                             "② 在下面填阿福这次的数值\n" +
                                             "③ 点下面的按钮看差值；对得上就算通过"
                             },
@@ -1666,26 +1973,6 @@ Spacer(Modifier.height(16.dp))
                 )
                 Spacer(Modifier.height(10.dp))
 
-                // 登录 / 退出放一起：已登录时给一个退出按钮
-                if (loggedIn) {
-                    OutlinedButton(
-                        onClick = {
-                            auth.clear()
-                            loggedInState.value = false
-                            summary = ""
-                            email = ""; password = ""
-                            log("已退出 Garmin 登录")
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Text("退出登录")
-                    }
-                    Spacer(Modifier.height(14.dp))
-                }
-
                 OutlinedTextField(
                     email, { email = it }, label = { Text("邮箱") },
                     singleLine = true, modifier = Modifier.fillMaxWidth()
@@ -1731,6 +2018,31 @@ Spacer(Modifier.height(16.dp))
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline
                 )
+
+                // 退出登录放页面最底部，远离输入框和登录按钮，避免误触
+                if (loggedIn) {
+                    Spacer(Modifier.height(24.dp))
+                    androidx.compose.material3.HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            auth.clear()
+                            loggedInState.value = false
+                            summary = ""
+                            email = ""; password = ""
+                            log("已退出 Garmin 登录")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("退出登录")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
             }
         }
     }

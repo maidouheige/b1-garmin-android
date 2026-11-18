@@ -1,7 +1,7 @@
 {
-  "versionCode": 34,
-  "versionName": "0.16.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.16.0.apk",
-  "notes": "退出登录并入账户页；校准按钮缩小移到资料设置旁；按钮加图标统一美化",
-  "size": 9686002
+  "versionCode": 35,
+  "versionName": "0.17.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.17.0.apk",
+  "notes": "打开App自动连秤待机称重：首页大屏实时跳体重、出阻抗即算体脂；设置页整合账户/蓝牙/资料/校准；修复系统返回键",
+  "size": 9714678
 }
