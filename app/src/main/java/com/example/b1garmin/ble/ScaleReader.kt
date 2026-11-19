@@ -17,6 +17,7 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.b1garmin.protocol.AfuProtocol
+import com.example.b1garmin.protocol.A1Protocol
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.UUID
 import kotlin.coroutines.resume
@@ -120,6 +121,43 @@ class ScaleReader(private val context: Context) {
 
     fun remember(d: Device) {
         prefs.edit().putString("last_addr", d.address).putString("last_name", d.name).apply()
+    }
+
+    // ---------------- 绑定秤（型号随 MAC 固定下来，不再每次靠名字猜） ----------------
+
+    /** 已绑定设备：MAC + 名字 + 型号(A1/B1)。没绑定过返回 null。 */
+    data class BoundScale(val address: String, val name: String, val model: String) {
+        val isA1: Boolean get() = model.equals("A1", ignoreCase = true)
+        val display: String get() = (name.ifBlank { "（无名秤）" }) + "  ·  $model"
+    }
+
+    /** 按广播名自动判定型号：命中 A1 关键字即 A1，否则 B1。绑定页用它给设备打标。 */
+    fun detectModel(name: String): String =
+        if (A1Protocol.NAME_HINTS.any { name.contains(it, ignoreCase = true) }) "A1" else "B1"
+
+    fun boundScale(): BoundScale? {
+        val addr = prefs.getString("bound_addr", null) ?: return null
+        val model = prefs.getString("bound_model", null) ?: return null
+        return BoundScale(addr, prefs.getString("bound_name", "").orEmpty(), model)
+    }
+
+    /** 绑定：记住这台秤的 MAC 和型号，并顺带设为「上次设备」让 findScale 优先连它。 */
+    fun bind(d: Device, model: String) {
+        prefs.edit()
+            .putString("bound_addr", d.address)
+            .putString("bound_name", d.name)
+            .putString("bound_model", model)
+            .putString("last_addr", d.address)
+            .putString("last_name", d.name)
+            .apply()
+    }
+
+    fun unbind() {
+        prefs.edit()
+            .remove("bound_addr")
+            .remove("bound_name")
+            .remove("bound_model")
+            .apply()
     }
 
     // ---------------- 扫描 ----------------

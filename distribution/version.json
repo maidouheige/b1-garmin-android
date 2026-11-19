@@ -1,7 +1,7 @@
 {
-  "versionCode": 39,
-  "versionName": "0.19.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.0.apk",
-  "notes": "v0.19.0:新增佳明国内版登录口子(国际/国内切换,token按区隔离,默认国际版零影响);新增A1体脂秤实验性支持(FFB0/AC帧,独立会话不影响B1,阻抗待真机校准);调试日志增加复制按钮方便回传;14项单测通过",
-  "size": 9735158
+  "versionCode": 38,
+  "versionName": "0.18.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.18.0.apk",
+  "notes": "当前稳定版 v0.18.0（B1 成熟顺畅版，打开不再提示更新）。绑定秤/A1/佳明国内版等新功能仍在真机测试，测试版请走单独下载链接，不会自动推送。",
+  "size": 9714674
 }

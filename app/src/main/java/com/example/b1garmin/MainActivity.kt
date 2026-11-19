@@ -131,6 +131,8 @@ class MainActivity : ComponentActivity() {
     private var hasLiveThisRound = false
     /** 进校准页前是否开着监听，返回时据此恢复 */
     private var resumeListenAfterCalib = false
+    /** 进绑定页前是否开着监听，返回时据此恢复 */
+    private var resumeListenAfterBind = false
 
     private fun crashFile() = java.io.File(filesDir, "last_crash.txt")
 
@@ -348,6 +350,15 @@ class MainActivity : ComponentActivity() {
             }
             if (!autoListen) break
 
+            // 已绑定：只认这台 MAC，别的秤一律不连（官方阿福"先绑定再用"的逻辑）。
+            // 没绑定过时保持原样，任何人扫到的候选秤都能连。
+            val bound = scale.boundScale()
+            if (bound != null && !bound.address.equals(target.address, ignoreCase = true)) {
+                livePhase = "已绑定「${bound.name.ifBlank { bound.address.take(8) }}」，在等它…"
+                delay(2000)
+                continue
+            }
+
             scale.remember(target)
             val addr = target.address
             prefs.edit()
@@ -390,10 +401,12 @@ class MainActivity : ComponentActivity() {
             }
 
             try {
+                // 通道判定：已绑定就用绑定时定死的型号，没绑定才按名字猜（保持旧行为）
+                val useA1 = bound?.isA1 ?: isA1Device(target.name)
                 val recs: List<com.example.b1garmin.ble.A1Session.Measurement> =
-                    if (isA1Device(target.name)) {
+                    if (useA1) {
                         // 实验性 A1：独立会话，和 B1 状态机完全隔离
-                        log("识别为 A1 体脂秤（实验性协议）")
+                        log("识别为 A1 体脂秤（实验性协议${if (bound != null) "，已绑定" else ""}）")
                         com.example.b1garmin.ble.A1Session(this@MainActivity, addr, { log(it) }).run(
                             a, male, h.toInt(), targetKg, onLiveCb, onImpCb, standby = true
                         ).let { list -> list.map { com.example.b1garmin.ble.A1Session.Measurement(it.timestampSec, it.weightKg, it.resistanceOhm, it.fromHistory) } }
@@ -570,12 +583,13 @@ class MainActivity : ComponentActivity() {
                 var showSettings by remember { mutableStateOf(false) }    // 资料编辑页
                 var showSettingsHub by remember { mutableStateOf(false) } // 设置中心（账户/蓝牙/资料/校准/关于）
                 var showCalib by remember { mutableStateOf(false) }
+                var showBind by remember { mutableStateOf(false) }      // 绑定秤页（识别 A1/B1 并锁定通道）
                 val loggedIn by loggedInState
 
                 // 系统侧滑/返回键：有子页面就逐层返回，只有在首页才退出 App。
                 // 依赖 BackHandler 的 enabled 条件：任一子页打开时接管返回事件。
                 BackHandler(enabled = showLogin || showLoginPage || showSettings ||
-                        showSettingsHub || showCalib) {
+                        showSettingsHub || showCalib || showBind) {
                     when {
                         showLogin -> showLogin = false
                         showLoginPage -> showLoginPage = false
@@ -583,6 +597,10 @@ class MainActivity : ComponentActivity() {
                         showCalib -> {
                             showCalib = false
                             if (resumeListenAfterCalib) startListen()
+                        }
+                        showBind -> {
+                            showBind = false
+                            if (resumeListenAfterBind) startListen()
                         }
                         showSettingsHub -> showSettingsHub = false
                     }
@@ -650,6 +668,13 @@ class MainActivity : ComponentActivity() {
                             if (resumeListenAfterCalib) startListen()
                         },
                     )
+                } else if (showBind) {
+                    BindScaleScreen(
+                        onBack = {
+                            showBind = false
+                            if (resumeListenAfterBind) startListen()
+                        },
+                    )
                 } else if (showSettingsHub) {
                     SettingsHubScreen(
                         version = versionName(),
@@ -663,6 +688,12 @@ class MainActivity : ComponentActivity() {
                             resumeListenAfterCalib = autoListen
                             stopListen()
                             showCalib = true
+                        },
+                        onOpenBind = {
+                            // 绑定要扫描附近设备，我们的监听占着 BLE 会互相干扰 → 暂停让位
+                            resumeListenAfterBind = autoListen
+                            stopListen()
+                            showBind = true
                         },
                         btState = { btTick.value; scale.stateText() },
                         btReady = { btTick.value; scale.isBluetoothReady() },
@@ -1411,6 +1442,7 @@ class MainActivity : ComponentActivity() {
         onOpenProfile: () -> Unit,
         onOpenLogin: () -> Unit,
         onOpenCalib: () -> Unit,
+        onOpenBind: () -> Unit,
         btState: () -> String,
         btReady: () -> Boolean,
         btDiag: () -> String?,
@@ -1514,6 +1546,37 @@ class MainActivity : ComponentActivity() {
                 }
                 Spacer(Modifier.height(16.dp))
 
+                // ---------------- 绑定秤 ----------------
+                Text("绑定秤", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        val bound = scale.boundScale()
+                        Text(
+                            if (bound != null) "● 已绑定：${bound.display}" else "○ 未绑定（当前按广播名自动识别）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (bound != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onOpenBind, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Settings, contentDescription = null,
+                                modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (bound != null) "重新绑定 / 解绑" else "绑定我的秤")
+                        }
+                        Text(
+                            "像官方阿福一样先用一次定死型号：绑定 A1 以后只走 A1 通道，绑定 B1 只走 B1 通道。不绑定则维持原样。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
                 // ---------------- 个人资料 ----------------
                 Text("个人资料", style = MaterialTheme.typography.titleMedium)
                 Surface(
@@ -1596,6 +1659,130 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+
+    // ====================================================================
+    // 绑定秤页：扫描附近设备 → 按名字自动识别 A1/B1 → 点一下绑定（锁定通道）
+    // ====================================================================
+    @Composable
+    private fun BindScaleScreen(onBack: () -> Unit) {
+        var scanning by remember { mutableStateOf(false) }
+        var devices by remember { mutableStateOf<List<ScaleReader.Device>>(emptyList()) }
+        var boundTick by remember { mutableStateOf(0) }
+        val bound = remember(boundTick) { scale.boundScale() }
+        val scope = rememberCoroutineScope()
+
+        Surface(Modifier.fillMaxSize()) {
+            Column(
+                Modifier.padding(16.dp).verticalScroll(rememberScrollState())
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("绑定我的秤", style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.weight(1f))
+                    TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null,
+                            modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("返回")
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                Text("当前绑定", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(4.dp))
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            if (bound != null) "● 已绑定：${bound.display}" else "○ 尚未绑定",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (bound != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline
+                        )
+                        if (bound != null) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    scale.unbind()
+                                    boundTick++
+                                    devices = emptyList()
+                                    log("已解除绑定，恢复按广播名自动识别")
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) { Text("解绑（恢复自动识别）") }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                Text("扫描附近的秤", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(4.dp))
+                Text("先轻踩一下秤唤醒它，再点扫描。App 会按名字自动认出 A1 / B1。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        scope.launch {
+                            scanning = true; devices = emptyList()
+                            val diag = scale.diagnose()
+                            if (diag != null) {
+                                log("✗ $diag")
+                            } else {
+                                log("绑定扫描 12 秒…")
+                                devices = scale.scanAll(12000) { d -> log("  " + d.display) }
+                                    .filter { it.hasAfuService || scale.detectModel(it.name) == "A1" ||
+                                            it.name.contains("B1", true) || it.name.contains("AFU", true) ||
+                                            it.name.contains("薄荷", true) || it.name.contains("MINT", true) ||
+                                            it.name.contains("SCALE", true) || it.name.contains("BH-TZ", true) }
+                                log("候选设备 ${devices.size} 个")
+                            }
+                            scanning = false
+                        }
+                    },
+                    enabled = !scanning, modifier = Modifier.fillMaxWidth()
+                ) { Text(if (scanning) "扫描中…（约 12 秒）" else "扫描附近的秤") }
+                Spacer(Modifier.height(8.dp))
+
+                devices.forEach { d ->
+                    val model = scale.detectModel(d.name)
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()
+                            .padding(vertical = 4.dp)) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(d.name.ifBlank { "（无名设备）" },
+                                    style = MaterialTheme.typography.bodyMedium)
+                                Text("${d.address}  ·  ${d.rssi}dBm  ·  识别为 $model",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = {
+                                scale.bind(d, model)
+                                boundTick++
+                                log("✓ 已绑定 ${d.name.ifBlank { d.address.take(8) }}（$model），以后只走 $model 通道")
+                            }) { Text("绑定") }
+                        }
+                    }
+                }
+
+                if (bound != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "提示：绑定后只连这台秤、只走 ${bound.model} 通道。换秤请到这里重新绑定或解绑。" +
+                                (if (bound.isA1) "\nA1 为实验性协议，体脂仅供参考，请回传日志帮忙校准。" else ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
             }
         }
     }
