@@ -234,4 +234,16 @@ class ProtocolTest {
         val cmd = com.example.b1garmin.protocol.A1Protocol.buildUserCommand(true, 35, 172)
         assertArrayEquals(byteArrayOf(0x10, 0x00, 0x02, 35, 172.toByte()), cmd)
     }
+
+    /**
+     * DI OAuth2 的 grant_type 是全球统一协议常量，绝不随账号区域(.com/.cn)变化。
+     * 国区端点 diauth.garmin.cn 实测只认 .com 那个 URI：换成 .cn 会 400 unsupported_grant_type，
+     * 导致抓到 ticket 却换不到 token。这里锁死常量，防止以后又被"顺手"按域名拼回去。
+     */
+    @Test
+    fun diGrantTypeIsRegionIndependentConstant() {
+        val gt = com.example.b1garmin.garmin.GarminAuth.DI_GRANT_TYPE
+        assertEquals("https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket", gt)
+        assertFalse("grant_type 不能带 .cn", gt.contains("garmin.cn"))
+    }
 }

@@ -58,6 +58,16 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
 
         private val JSON_MEDIA = "application/json".toMediaType()
 
+        /**
+         * grant_type 是 Garmin DI OAuth2 的「授权类型标识」协议常量，全球统一用 .com 那个 URI，
+         * 不随账号区域变化。实测国区端点 diauth.garmin.cn 也只认这个值：
+         *   - 传 .com 常量 → 服务端继续校验 ticket（invalid service ticket provided）= 已接受；
+         *   - 传 .cn 版本   → 直接 400 unsupported_grant_type。
+         * token 端点、service_url 才按区域走各自域名；这个常量永远固定。
+         */
+        const val DI_GRANT_TYPE =
+            "https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket"
+
         fun isGarminMobileLoginUrl(url: String): Boolean =
             url.contains(LOGIN_PATH) || url.contains("/mobile/api/mfa")
     }
@@ -67,7 +77,6 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
     private val ssoUrl = "https://sso.$domain"
     private val iosServiceUrl = "https://mobile.integration.$domain/gcm/ios"
     private val diTokenUrl = "https://diauth.$domain/di-oauth2-service/oauth/token"
-    private val diGrantType = "https://connectapi.$domain/di-oauth2-service/oauth/grant/service_ticket"
     private val connectApi = "https://connectapi.$domain"
 
     /** 两个区的 token 分开存，切换登录不会串号；国际版沿用旧 key，老用户不丢登录。 */
@@ -246,7 +255,7 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
                     val form = FormBody.Builder()
                         .add("client_id", cid)
                         .add("service_ticket", ticket)
-                        .add("grant_type", diGrantType)
+                        .add("grant_type", DI_GRANT_TYPE)
                         .add("service_url", serviceUrl)
                         .build()
 
