@@ -117,9 +117,11 @@ class ScaleReader(private val context: Context) {
         }
     }
 
-    fun lastDeviceAddress(): String? = prefs.getString("last_addr", null)
+    fun lastDeviceAddress(): String? =
+        prefs.getString("last_addr", null)?.takeIf { !it.startsWith("MOCK:") }
 
     fun remember(d: Device) {
+        if (d.address.startsWith("MOCK:")) return   // 测试期假秤不写进「上次设备」
         prefs.edit().putString("last_addr", d.address).putString("last_name", d.name).apply()
     }
 
@@ -138,6 +140,9 @@ class ScaleReader(private val context: Context) {
     fun boundScale(): BoundScale? {
         val addr = prefs.getString("bound_addr", null) ?: return null
         val model = prefs.getString("bound_model", null) ?: return null
+        // 正式版没有假设备；若 prefs 里还留着测试版绑定的模拟秤（地址以 MOCK: 开头），
+        // 必须当成「未绑定」，否则会一直等一台根本不存在的秤，真实秤再也连不上。
+        if (addr.startsWith("MOCK:")) return null
         return BoundScale(addr, prefs.getString("bound_name", "").orEmpty(), model)
     }
 

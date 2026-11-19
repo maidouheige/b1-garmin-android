@@ -133,11 +133,6 @@ class MainActivity : ComponentActivity() {
     private var resumeListenAfterCalib = false
     /** 进绑定页前是否开着监听，返回时据此恢复 */
     private var resumeListenAfterBind = false
-    /**
-     * 模拟称重（仅 debug 测试版可用）：模拟器/无蓝牙时用假体重+假阻抗喂给同一条 UI/上传链，
-     * 方便在电脑上验证界面、体脂计算、绑定流程和 Garmin 上传（含国区 2FA）。正式版恒为 false。
-     */
-    private var mockMode by mutableStateOf(false)
 
     private fun crashFile() = java.io.File(filesDir, "last_crash.txt")
 
@@ -242,12 +237,6 @@ class MainActivity : ComponentActivity() {
             log("   已默认对齐阿福；只有实测和阿福对不上时，才需要去「设置 → 体脂率校准」校准")
         }
         recs.forEach { rec ->
-            // ★ 测试假数据绝不写进佳明：地址带 MOCK: 前缀时只走本地展示/台账，不调用真实上传。
-            //   这样即使模拟器里已登录国区/国际版，假体重也不会污染真实账号。
-            val dryRun = addr.startsWith("MOCK:")
-            if (dryRun) {
-                log("· [测试模式] 这是模拟秤的数据，不会上传到 Garmin（保护真实账号数据）")
-            }
             val whenStr = java.text.SimpleDateFormat("MM-dd HH:mm")
                 .format(java.util.Date(rec.timestampSec * 1000))
             val key = "${rec.timestampSec}-${Math.round(rec.weightKg * 1000)}"
@@ -295,12 +284,6 @@ class MainActivity : ComponentActivity() {
                 log("$whenStr ${rec.weightKg}kg ✗ 体成分推算失败")
                 return@forEach
             }
-            // ★ dry-run：体脂/台账/锚点全记，但绝不上传，不占用真实 ledger（避免污染佳明）
-            if (dryRun) {
-                okCount++
-                log("$whenStr ${rec.weightKg}kg ○ [测试] 体脂 ${"%.1f".format(est.bodyFatPercent)}% 已算出，未上传 Garmin")
-                return@forEach
-            }
             val fit = FitWriter.build(est, rec.timestampSec)
             val up = auth.uploadFit(fit, "weight_${rec.timestampSec}.fit")
             if (up.isSuccess) {
@@ -326,116 +309,10 @@ class MainActivity : ComponentActivity() {
         return okCount to skipCount
     }
 
-    /** 启动自动监听（幂等）。模拟模式开启时走假数据源，不碰蓝牙。 */
+    /** 启动自动监听（幂等） */
     private fun startListen() {
         if (listenJob?.isActive == true) return
-        listenJob = lifecycleScope.launch {
-            if (mockMode) mockWeighLoop() else autoWeighLoop()
-        }
-    }
-
-    /**
-     * 模拟称重循环（仅 debug 测试版）：用假体重/假阻抗走和真秤完全相同的 UI 回调 + uploadRecords 链路，
-     * 每 12 秒"称"一次，方便在没蓝牙的模拟器里验证界面、体脂计算、绑定、登录、上传。
-     * 正式版不会有入口进入这里（开关用 BuildConfig.DEBUG 控制）。
-     */
-    private suspend fun mockWeighLoop() {
-        var round = 0
-        while (autoListen && mockMode) {
-            round++
-            val h = profileState.value.heightCm
-            val a = profileState.value.age
-            // 看绑定型号：绑了 A1 就走 A1 协议解析链，否则 B1（未绑定默认 B1）
-            val bound = scale.boundScale()
-            val useA1 = bound?.isA1 == true
-            val model = if (useA1) "A1" else "B1"
-            // 地址带 MOCK: 前缀 —— uploadRecords 据此保证绝不真上传
-            val simAddr = if (useA1) "MOCK:A1-SIMULATED" else "MOCK:SIMULATED-SCALE"
-            val simName = if (useA1) "模拟A1秤" else "模拟B1秤"
-            // 假体重：围绕博客 A1 真机值 67.3kg，每轮 +0.1kg 让去重放行、看到连续记录
-            val baseKg = 67.3 + (round % 5) * 0.1
-            val ohm = 575 + (round % 3) * 10
-            log("[模拟$model] 第 $round 轮：开始称重（假数据，非真秤，走 $model 通道）")
-
-            // ① 体重跳动（1.0 → 锁定）。A1 走真实 AC 帧 + parse；B1 走原假数据回调。
-            var finalKg = baseKg
-            var finalRes: Double? = null
-            if (useA1) {
-                // A1：构造 LIVE 帧 → A1Protocol.parse → 回调，最后发 FINAL 锁定帧带阻抗
-                for (step in 0..8) {
-                    if (!autoListen || !mockMode) return
-                    val kg = baseKg - 1.0 + step * (1.0 / 8.0)
-                    val type = if (step == 8) com.example.b1garmin.protocol.A1Protocol.TYPE_FINAL
-                               else com.example.b1garmin.protocol.A1Protocol.TYPE_LIVE
-                    val frame = com.example.b1garmin.protocol.A1Protocol.buildFakeFrame(
-                        kg, ohm, 519, type
-                    )
-                    val p = com.example.b1garmin.protocol.A1Protocol.parse(frame)
-                    log("[模拟A1] 帧 ${com.example.b1garmin.protocol.A1Protocol.toHex(frame)} " +
-                        "→ type=%02X w=%s Z=${p?.impedance1}/${p?.impedance2} locked=${p?.locked}"
-                            .format(p?.type ?: -1, p?.weightKg?.toString() ?: "-"))
-                    finalKg = p?.weightKg ?: kg
-                    if (step == 8) finalRes = p?.impedance1?.toDouble()
-                    val locked = step == 8
-                    ui.post {
-                        if (!hasLiveThisRound) {
-                            hasLiveThisRound = true
-                            liveEstimate = null
-                            liveResistance = 0.0
-                        }
-                        liveKg = finalKg
-                        liveLocked = locked
-                        livePhase = if (locked) "[模拟A1] 收到锁定帧（type=02），等待阻抗…"
-                                    else "[模拟A1] 正在称重…"
-                    }
-                    delay(90)
-                }
-            } else {
-                for (step in 0..8) {
-                    if (!autoListen || !mockMode) return
-                    val kg = baseKg - 1.0 + step * (1.0 / 8.0)
-                    ui.post {
-                        if (!hasLiveThisRound) {
-                            hasLiveThisRound = true
-                            liveEstimate = null
-                            liveResistance = 0.0
-                        }
-                        liveKg = kg
-                        liveLocked = step == 8
-                        livePhase = if (step == 8) "[模拟B1] 体重已锁定，等待阻抗…" else "[模拟B1] 正在称重…"
-                    }
-                    delay(90)
-                }
-            }
-
-            // ② 阻抗到手 → 走同样的 onImp 回调算体脂
-            if (!useA1) finalRes = ohm.toDouble()
-            ui.post {
-                liveResistance = finalRes ?: 0.0
-                liveEstimate = BodyComp.estimate(
-                    liveKg, h, a, profileState.value.sexText, finalRes, savedOffsets(simAddr)
-                )
-                livePhase = "[模拟$model] ✓ 体成分已算出（阻抗 ${finalRes ?: "无"}Ω）"
-            }
-            delay(200)
-
-            // ③ 走同一条上传链（dry-run：去重/台账/校准/锚点全复用，但不真传佳明）
-            val rec = com.example.b1garmin.ble.A1Session.Measurement(
-                System.currentTimeMillis() / 1000, finalKg, finalRes, false
-            )
-            try {
-                val (ok, _) = uploadRecords(listOf(rec), simAddr, simName)
-                ui.post {
-                    livePhase = if (ok > 0) "[模拟$model] ✓ 称重完成（测试模式：未上传 Garmin）"
-                                else "[模拟$model] ✓ 称重完成（无新记录）"
-                }
-            } catch (e: Exception) {
-                log("[模拟$model] 处理出错：${e.message}")
-            }
-            delay(12000)
-            hasLiveThisRound = false
-        }
-        ui.post { livePhase = "模拟称重已停止" }
+        listenJob = lifecycleScope.launch { autoWeighLoop() }
     }
 
     /** 停止自动监听，让出蓝牙给阿福 */
@@ -671,9 +548,6 @@ class MainActivity : ComponentActivity() {
 
         askPermissions()
 
-        // 模拟模式只在 debug 测试版生效；正式版即使 prefs 里有残留也强制关闭，杜绝误入假数据。
-        mockMode = BuildConfig.DEBUG && prefs.getBoolean("mock_mode", false)
-
         // 打开 App 就自动进入称重待机：连上秤、等人站上去。
         // 权限是异步授予的，autoWeighLoop 内部会等蓝牙/权限就绪，不会卡死。
         startListen()
@@ -820,16 +694,6 @@ class MainActivity : ComponentActivity() {
                             resumeListenAfterBind = autoListen
                             stopListen()
                             showBind = true
-                        },
-                        mockEnabled = mockMode,
-                        onToggleMock = {
-                            mockMode = !mockMode
-                            prefs.edit().putBoolean("mock_mode", mockMode).apply()
-                            // 切换数据源后重启监听，让新Loop立即生效
-                            stopListen()
-                            if (autoListen) startListen()
-                            log(if (mockMode) "[模拟模式] 已开启：用假体重+假阻抗，不连蓝牙（重启监听）"
-                                else "[模拟模式] 已关闭：恢复真实蓝牙称重")
                         },
                         btState = { btTick.value; scale.stateText() },
                         btReady = { btTick.value; scale.isBluetoothReady() },
@@ -1331,7 +1195,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 // ---------------- 顶栏 ----------------
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("B1 体脂秤 → Garmin", style = MaterialTheme.typography.titleLarge,
+                    Text("阿福体脂秤 → Garmin", style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.weight(1f))
                     OutlinedButton(
                         onClick = onOpenSettings,
@@ -1579,8 +1443,6 @@ class MainActivity : ComponentActivity() {
         onOpenLogin: () -> Unit,
         onOpenCalib: () -> Unit,
         onOpenBind: () -> Unit,
-        mockEnabled: Boolean,
-        onToggleMock: () -> Unit,
         btState: () -> String,
         btReady: () -> Boolean,
         btDiag: () -> String?,
@@ -1714,37 +1576,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(16.dp))
-
-                // ---------------- 模拟称重（仅测试版可见） ----------------
-                if (BuildConfig.DEBUG) {
-                    Text("模拟称重（仅测试版）", style = MaterialTheme.typography.titleMedium)
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        if (mockEnabled) "● 模拟模式已开（假数据，不连蓝牙）" else "○ 模拟模式关闭（真实秤）",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = if (mockEnabled) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.outline
-                                    )
-                                    Text(
-                                        "电脑模拟器没有蓝牙，开这个可用假体重+假阻抗体验完整流程（界面/体脂/上传/登录）。正式版没有此开关。",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.outline
-                                    )
-                                }
-                                Spacer(Modifier.width(8.dp))
-                                Switch(checked = mockEnabled, onCheckedChange = { onToggleMock() })
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                }
 
                 // ---------------- 个人资料 ----------------
                 Text("个人资料", style = MaterialTheme.typography.titleMedium)
@@ -1896,42 +1727,22 @@ class MainActivity : ComponentActivity() {
                 Text("先轻踩一下秤唤醒它，再点扫描。App 会按名字自动认出 A1 / B1。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline)
-                if (BuildConfig.DEBUG) {
-                    Spacer(Modifier.height(4.dp))
-                    Text("[测试版] 点扫描会放出两台模拟秤（A1/B1），供无蓝牙的电脑验证绑定流程。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary)
-                }
                 Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = {
                         scope.launch {
                             scanning = true; devices = emptyList()
-                            if (BuildConfig.DEBUG) {
-                                // 测试版：模拟器无蓝牙硬件，直接注入两台假秤供绑定测试。
-                                // 地址与 mockWeighLoop 的 simAddr 一致，保证走 dry-run 不上传。
-                                log("[测试] 注入模拟设备（非真实蓝牙扫描）：A1 + B1")
-                                delay(600)
-                                devices = listOf(
-                                    ScaleReader.Device(
-                                        "MOCK:A1-SIMULATED", "AFU-WL-TZ-A1（模拟秤）", -45, false),
-                                    ScaleReader.Device(
-                                        "MOCK:SIMULATED-SCALE", "B1 薄荷体脂秤（模拟秤）", -50, true),
-                                )
-                                log("候选设备 ${devices.size} 个（A1 / B1 各一台）")
+                            val diag = scale.diagnose()
+                            if (diag != null) {
+                                log("✗ $diag")
                             } else {
-                                val diag = scale.diagnose()
-                                if (diag != null) {
-                                    log("✗ $diag")
-                                } else {
-                                    log("绑定扫描 12 秒…")
-                                    devices = scale.scanAll(12000) { d -> log("  " + d.display) }
-                                        .filter { it.hasAfuService || scale.detectModel(it.name) == "A1" ||
-                                                it.name.contains("B1", true) || it.name.contains("AFU", true) ||
-                                                it.name.contains("薄荷", true) || it.name.contains("MINT", true) ||
-                                                it.name.contains("SCALE", true) || it.name.contains("BH-TZ", true) }
-                                    log("候选设备 ${devices.size} 个")
-                                }
+                                log("绑定扫描 12 秒…")
+                                devices = scale.scanAll(12000) { d -> log("  " + d.display) }
+                                    .filter { it.hasAfuService || scale.detectModel(it.name) == "A1" ||
+                                            it.name.contains("B1", true) || it.name.contains("AFU", true) ||
+                                            it.name.contains("薄荷", true) || it.name.contains("MINT", true) ||
+                                            it.name.contains("SCALE", true) || it.name.contains("BH-TZ", true) }
+                                log("候选设备 ${devices.size} 个")
                             }
                             scanning = false
                         }

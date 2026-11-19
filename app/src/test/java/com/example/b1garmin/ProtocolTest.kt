@@ -247,9 +247,9 @@ class ProtocolTest {
         assertFalse("grant_type 不能带 .cn", gt.contains("garmin.cn"))
     }
 
-    /** 测试版模拟 A1 造的假帧，必须能被真实 parse() 正确解出体重/阻抗/锁定态。 */
+    /** 构造的 AC 帧必须能被真实 parse() 正确解出体重/阻抗/锁定态（协议解析器回归保护）。 */
     @Test
-    fun mockA1FakeFrameRoundTripsThroughRealParser() {
+    fun a1SyntheticFrameRoundTripsThroughRealParser() {
         val frame = com.example.b1garmin.protocol.A1Protocol.buildFakeFrame(67.3, 575, 519,
             com.example.b1garmin.protocol.A1Protocol.TYPE_FINAL)
         val p = com.example.b1garmin.protocol.A1Protocol.parse(frame)!!

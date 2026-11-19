@@ -75,8 +75,8 @@ object A1Protocol {
     )
 
     /**
-     * 构造一帧模拟 AC 帧（仅测试版模拟称重用）：把体重/阻抗按真实字节布局写进去，
-     * 再交给 parse() 走真实解析链，从而在没蓝牙的模拟器里验证 A1 协议解析本身。
+     * 按真实字节布局构造一帧 AC 帧：把体重/阻抗写进去后交给 parse() 走真实解析链。
+     * 协议层构造器，供单元测试验证解析器正确性（正式版不产生任何假数据）。
      */
     fun buildFakeFrame(weightKg: Double, impedance1: Int, impedance2: Int, type: Int): ByteArray {
         val f = ByteArray(FRAME_SIZE)
