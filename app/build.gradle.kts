@@ -30,6 +30,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true   // 模拟称重开关只在 debug 构建可见，需要 BuildConfig.DEBUG
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.15"

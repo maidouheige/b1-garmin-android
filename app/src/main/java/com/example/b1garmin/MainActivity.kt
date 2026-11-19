@@ -133,6 +133,11 @@ class MainActivity : ComponentActivity() {
     private var resumeListenAfterCalib = false
     /** 进绑定页前是否开着监听，返回时据此恢复 */
     private var resumeListenAfterBind = false
+    /**
+     * 模拟称重（仅 debug 测试版可用）：模拟器/无蓝牙时用假体重+假阻抗喂给同一条 UI/上传链，
+     * 方便在电脑上验证界面、体脂计算、绑定流程和 Garmin 上传（含国区 2FA）。正式版恒为 false。
+     */
+    private var mockMode by mutableStateOf(false)
 
     private fun crashFile() = java.io.File(filesDir, "last_crash.txt")
 
@@ -309,10 +314,74 @@ class MainActivity : ComponentActivity() {
         return okCount to skipCount
     }
 
-    /** 启动自动监听（幂等） */
+    /** 启动自动监听（幂等）。模拟模式开启时走假数据源，不碰蓝牙。 */
     private fun startListen() {
         if (listenJob?.isActive == true) return
-        listenJob = lifecycleScope.launch { autoWeighLoop() }
+        listenJob = lifecycleScope.launch {
+            if (mockMode) mockWeighLoop() else autoWeighLoop()
+        }
+    }
+
+    /**
+     * 模拟称重循环（仅 debug 测试版）：用假体重/假阻抗走和真秤完全相同的 UI 回调 + uploadRecords 链路，
+     * 每 12 秒"称"一次，方便在没蓝牙的模拟器里验证界面、体脂计算、绑定、登录、上传。
+     * 正式版不会有入口进入这里（开关用 BuildConfig.DEBUG 控制）。
+     */
+    private suspend fun mockWeighLoop() {
+        val simAddr = "MOCK:SIMULATED-SCALE"
+        var round = 0
+        while (autoListen && mockMode) {
+            round++
+            val h = profileState.value.heightCm
+            val a = profileState.value.age
+            // 假体重：70kg 上下小幅浮动，每轮 +0.1kg 让去重逻辑放行、能看到连续上传
+            val baseKg = 70.0 + (round % 5) * 0.1
+            log("[模拟] 第 $round 轮：开始称重（假数据，非真秤）")
+
+            // ① 体重跳动（1.0 → 锁定），走和真秤一样的 onLive 回调
+            for (step in 0..8) {
+                if (!autoListen || !mockMode) return
+                val kg = baseKg - 1.0 + step * (1.0 / 8.0)
+                ui.post {
+                    if (!hasLiveThisRound) {
+                        hasLiveThisRound = true
+                        liveEstimate = null
+                        liveResistance = 0.0
+                    }
+                    liveKg = kg
+                    liveLocked = step == 8
+                    livePhase = if (step == 8) "[模拟] 体重已锁定，等待阻抗…" else "[模拟] 正在称重…"
+                }
+                delay(90)
+            }
+
+            // ② 阻抗到手 → 走同样的 onImp 回调算体脂
+            val ohm = 500.0 + (round % 3) * 25
+            ui.post {
+                liveResistance = ohm
+                liveEstimate = BodyComp.estimate(
+                    liveKg, h, a, profileState.value.sexText, ohm, savedOffsets(simAddr)
+                )
+                livePhase = "[模拟] ✓ 体成分已算出"
+            }
+            delay(200)
+
+            // ③ 走同一条上传链（去重/台账/校准/锚点全复用）
+            val rec = com.example.b1garmin.ble.A1Session.Measurement(
+                System.currentTimeMillis() / 1000, baseKg, ohm, false
+            )
+            try {
+                val (ok, _) = uploadRecords(listOf(rec), simAddr, "模拟秤")
+                ui.post {
+                    livePhase = if (ok > 0) "[模拟] ✓ 已上传 $ok 条到 Garmin" else "[模拟] ✓ 称重完成（无新记录）"
+                }
+            } catch (e: Exception) {
+                log("[模拟] 上传出错：${e.message}")
+            }
+            delay(12000)
+            hasLiveThisRound = false
+        }
+        ui.post { livePhase = "模拟称重已停止" }
     }
 
     /** 停止自动监听，让出蓝牙给阿福 */
@@ -548,6 +617,9 @@ class MainActivity : ComponentActivity() {
 
         askPermissions()
 
+        // 模拟模式只在 debug 测试版生效；正式版即使 prefs 里有残留也强制关闭，杜绝误入假数据。
+        mockMode = BuildConfig.DEBUG && prefs.getBoolean("mock_mode", false)
+
         // 打开 App 就自动进入称重待机：连上秤、等人站上去。
         // 权限是异步授予的，autoWeighLoop 内部会等蓝牙/权限就绪，不会卡死。
         startListen()
@@ -694,6 +766,16 @@ class MainActivity : ComponentActivity() {
                             resumeListenAfterBind = autoListen
                             stopListen()
                             showBind = true
+                        },
+                        mockEnabled = mockMode,
+                        onToggleMock = {
+                            mockMode = !mockMode
+                            prefs.edit().putBoolean("mock_mode", mockMode).apply()
+                            // 切换数据源后重启监听，让新Loop立即生效
+                            stopListen()
+                            if (autoListen) startListen()
+                            log(if (mockMode) "[模拟模式] 已开启：用假体重+假阻抗，不连蓝牙（重启监听）"
+                                else "[模拟模式] 已关闭：恢复真实蓝牙称重")
                         },
                         btState = { btTick.value; scale.stateText() },
                         btReady = { btTick.value; scale.isBluetoothReady() },
@@ -1443,6 +1525,8 @@ class MainActivity : ComponentActivity() {
         onOpenLogin: () -> Unit,
         onOpenCalib: () -> Unit,
         onOpenBind: () -> Unit,
+        mockEnabled: Boolean,
+        onToggleMock: () -> Unit,
         btState: () -> String,
         btReady: () -> Boolean,
         btDiag: () -> String?,
@@ -1576,6 +1660,37 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(16.dp))
+
+                // ---------------- 模拟称重（仅测试版可见） ----------------
+                if (BuildConfig.DEBUG) {
+                    Text("模拟称重（仅测试版）", style = MaterialTheme.typography.titleMedium)
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        if (mockEnabled) "● 模拟模式已开（假数据，不连蓝牙）" else "○ 模拟模式关闭（真实秤）",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (mockEnabled) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.outline
+                                    )
+                                    Text(
+                                        "电脑模拟器没有蓝牙，开这个可用假体重+假阻抗体验完整流程（界面/体脂/上传/登录）。正式版没有此开关。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Switch(checked = mockEnabled, onCheckedChange = { onToggleMock() })
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
 
                 // ---------------- 个人资料 ----------------
                 Text("个人资料", style = MaterialTheme.typography.titleMedium)
