@@ -38,6 +38,7 @@ class ScaleReader(private val context: Context) {
     companion object {
         private const val TAG = "ScaleReader"
         private val SERVICE = UUID.fromString(AfuProtocol.SERVICE_UUID)
+        private val A1_SERVICE = UUID.fromString(A1Protocol.SERVICE_UUID)
 
         /** 名字里出现这些关键字就认为是候选秤（含实验性 A1） */
         private val NAME_HINTS = listOf(
@@ -51,10 +52,12 @@ class ScaleReader(private val context: Context) {
         val name: String,
         val rssi: Int = 0,
         val hasAfuService: Boolean = false,
+        val hasA1Service: Boolean = false,
     ) {
         val display: String
             get() = (name.ifBlank { "（无名设备）" }) + "  " + address +
-                    (if (hasAfuService) "  [FC50]" else "") + "  ${rssi}dBm"
+                    (if (hasAfuService) "  [FC50]" else "") +
+                    (if (hasA1Service) "  [FFB0]" else "") + "  ${rssi}dBm"
     }
 
     private val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -133,9 +136,9 @@ class ScaleReader(private val context: Context) {
         val display: String get() = (name.ifBlank { "（无名秤）" }) + "  ·  $model"
     }
 
-    /** 按广播名自动判定型号：命中 A1 关键字即 A1，否则 B1。绑定页用它给设备打标。 */
-    fun detectModel(name: String): String =
-        if (A1Protocol.NAME_HINTS.any { name.contains(it, ignoreCase = true) }) "A1" else "B1"
+    /** 按广播名/服务自动判定型号：命中 A1 关键字或带 FFB0 服务即 A1，否则 B1。绑定页用它给设备打标。 */
+    fun detectModel(name: String, hasA1Service: Boolean = false): String =
+        if (hasA1Service || A1Protocol.NAME_HINTS.any { name.contains(it, ignoreCase = true) }) "A1" else "B1"
 
     fun boundScale(): BoundScale? {
         val addr = prefs.getString("bound_addr", null) ?: return null
@@ -177,11 +180,14 @@ class ScaleReader(private val context: Context) {
             recName
         } ?: ""
         val uuids = result.scanRecord?.serviceUuids?.mapNotNull { it.uuid } ?: emptyList()
-        return Device(addr, name, result.rssi, uuids.contains(SERVICE))
+        return Device(
+            addr, name, result.rssi,
+            uuids.contains(SERVICE), uuids.contains(A1_SERVICE)
+        )
     }
 
     private fun looksLikeScale(d: Device): Boolean =
-        d.hasAfuService || d.address == lastDeviceAddress() ||
+        d.hasAfuService || d.hasA1Service || d.address == lastDeviceAddress() ||
                 NAME_HINTS.any { d.name.contains(it, ignoreCase = true) }
 
     /**
@@ -262,9 +268,12 @@ class ScaleReader(private val context: Context) {
         timeoutMs: Long = 4000,
         onSeen: (Device) -> Unit = {},
     ): Device? {
-        // 第一轮按 FC50 过滤，命中就停（实测 B1 广播里带 FC50，通常 1 秒内命中）
-        scanOnce(timeoutMs, SERVICE, onSeen) { looksLikeScale(it) }?.let { return it }
-        // 兜底：不过滤再扫一轮，但只多等 2 秒，避免整体拖太久
+        // A1（FFB0）广播里没有 B1 的 FC50 服务：旧版第一轮按 FC50 硬件过滤会必然错过 A1，
+        // 要白等第一轮超时、第二轮无过滤才被发现，A1 用户因此明显更慢。
+        // 现在第一轮直接无过滤，靠名字 / 上次 MAC / FC50 认秤，A1、B1 都能首轮命中；
+        // 命中即停，周围其它 BLE 设备会被 looksLikeScale 挡掉，不会误连。
+        scanOnce(timeoutMs, null, onSeen) { looksLikeScale(it) }?.let { return it }
+        // 兜底：广播有间隙时再无过滤扫一轮，但只多等 2 秒，避免整体拖太久。
         return scanOnce(timeoutMs + 2000, null, onSeen) { looksLikeScale(it) }
     }
 
@@ -318,7 +327,7 @@ class ScaleReader(private val context: Context) {
     }
 
     private fun rank(list: List<Device>): List<Device> = list.sortedWith(
-        compareByDescending<Device> { it.hasAfuService }
+        compareByDescending<Device> { it.hasAfuService || it.hasA1Service }
             .thenByDescending { d -> NAME_HINTS.any { d.name.contains(it, true) } }
             .thenByDescending { it.rssi }
     )

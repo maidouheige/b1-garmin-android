@@ -752,7 +752,15 @@ class MainActivity : ComponentActivity() {
                                 Text("当前版本 v${versionName()}")
                                 Spacer(Modifier.height(8.dp))
                                 Text("更新内容：", style = MaterialTheme.typography.bodySmall)
-                                Text(info.notes.ifBlank { "（本次为常规更新）" })
+                                val lines = info.noteLines
+                                if (lines.isEmpty()) {
+                                    Text("（本次为常规更新）")
+                                } else {
+                                    lines.forEach { line ->
+                                        Text("• $line")
+                                        Spacer(Modifier.height(2.dp))
+                                    }
+                                }
                                 if (updateProgress.isNotEmpty()) {
                                     Spacer(Modifier.height(12.dp))
                                     Text(updateProgress, color = MaterialTheme.colorScheme.primary)
@@ -1738,7 +1746,7 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 log("绑定扫描 12 秒…")
                                 devices = scale.scanAll(12000) { d -> log("  " + d.display) }
-                                    .filter { it.hasAfuService || scale.detectModel(it.name) == "A1" ||
+                                    .filter { it.hasAfuService || it.hasA1Service || scale.detectModel(it.name) == "A1" ||
                                             it.name.contains("B1", true) || it.name.contains("AFU", true) ||
                                             it.name.contains("薄荷", true) || it.name.contains("MINT", true) ||
                                             it.name.contains("SCALE", true) || it.name.contains("BH-TZ", true) }
@@ -1752,7 +1760,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(8.dp))
 
                 devices.forEach { d ->
-                    val model = scale.detectModel(d.name)
+                    val model = scale.detectModel(d.name, d.hasA1Service)
                     Surface(color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()
                             .padding(vertical = 4.dp)) {

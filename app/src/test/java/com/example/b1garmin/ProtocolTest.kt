@@ -263,4 +263,21 @@ class ProtocolTest {
                 com.example.b1garmin.protocol.A1Protocol.TYPE_LIVE))!!
         assertFalse(live.locked)
     }
+
+    /** 更新说明按中英文分号拆条，空串/纯空白不占位置，弹窗逐条展示。 */
+    @Test
+    fun updateNotesSplitIntoLines() {
+        val empty = com.example.b1garmin.Updater.UpdateInfo(0, "", "", "", 0)
+        assertTrue(empty.noteLines.isEmpty())
+
+        val info = com.example.b1garmin.Updater.UpdateInfo(
+            41, "0.19.2", "",
+            "A1 连接提速；更新弹窗分条显示；   ；其它不变",
+            0
+        )
+        assertEquals(
+            listOf("A1 连接提速", "更新弹窗分条显示", "其它不变"),
+            info.noteLines
+        )
+    }
 }

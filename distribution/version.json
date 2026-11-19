@@ -1,7 +1,7 @@
 {
-  "versionCode": 40,
-  "versionName": "0.19.1",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.1.apk",
-  "notes": "首页标题改为「阿福体脂秤 → Garmin」;移除全部模拟/测试代码,恢复佳明真实上传与真实蓝牙绑定;绑定秤后按型号锁定A1/B1通道;修复国区登录换token(grant_type为全球协议常量);兼容测试版残留的假秤绑定",
+  "versionCode": 41,
+  "versionName": "0.19.2",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.2.apk",
+  "notes": "A1 连接提速：首轮扫描不再被 B1 专用过滤挡住，A1/B1 现在都能第一轮就被发现；A1 广播带 FFB0 服务即可自动识别型号，绑定不再被误判成 B1；检查更新弹窗改为逐条清晰展示本次更新内容；其余同步/蓝牙/体脂算法逻辑不变",
   "size": 9751538
 }

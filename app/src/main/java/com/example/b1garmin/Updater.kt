@@ -32,7 +32,13 @@ object Updater {
         val url: String,
         val notes: String,
         val size: Long,
-    )
+    ) {
+        /** 更新说明按分号拆成多条，弹窗里逐条显示更清楚（兼容中英文分号）。 */
+        val noteLines: List<String>
+            get() = notes.split('；', ';')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+    }
 
     private val client = OkHttpClient()
 
