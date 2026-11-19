@@ -211,4 +211,27 @@ class ProtocolTest {
         assertEquals(FitWriter.crc16(body), storedCrc)
         assertTrue(fit.size > 100)
     }
+
+    // ---------- A1（实验性）：用阿文博客公开的真实帧验证 ----------
+
+    @Test
+    fun a1ParsesRealLockedFrame() {
+        // 博客实测：真人 67.30kg 的锁定帧，bytes[10:13]=69 06 b2 → (0x6906b2-0x680000)/1000≈67.25
+        val hex = "ac 29 02 00 02 3f 02 07 01 80 69 06 b2 00 00 00 00 00 29 d6 0d"
+        val f = hex.split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        val p = com.example.b1garmin.protocol.A1Protocol.parse(f)!!
+        assertEquals(0x02, p.type)
+        assertTrue(p.locked)
+        assertEquals(67.25, p.weightKg!!, 0.05)
+        assertEquals(575, p.impedance1)   // 02 3f
+        assertEquals(519, p.impedance2)   // 02 07
+    }
+
+    @Test
+    fun a1RejectsNonAcFrameAndBuildsUserCommand() {
+        val junk = ByteArray(20)
+        assertNull(com.example.b1garmin.protocol.A1Protocol.parse(junk))   // 非 AC 帧
+        val cmd = com.example.b1garmin.protocol.A1Protocol.buildUserCommand(true, 35, 172)
+        assertArrayEquals(byteArrayOf(0x10, 0x00, 0x02, 35, 172.toByte()), cmd)
+    }
 }

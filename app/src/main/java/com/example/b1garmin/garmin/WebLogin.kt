@@ -24,6 +24,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 class WebLogin(
     private val context: Context,
+    private val auth: GarminAuth,
     private val onTicket: (String) -> Unit,
     private val onLog: (String) -> Unit,
 ) {
@@ -132,7 +133,7 @@ class WebLogin(
 
                     override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
                         val m = Regex("""[?&](?:ticket|serviceTicketId)=([^&]+)""").find(url)
-                        if (m != null && url.contains("garmin.com")) {
+                        if (m != null && (url.contains("garmin.com") || url.contains("garmin.cn"))) {
                             fire(m.groupValues[1], "redirect")
                             return true
                         }
@@ -159,7 +160,7 @@ class WebLogin(
                 }, "B1Bridge")
 
                 setBackgroundColor(Color.WHITE)
-                loadUrl(GarminAuth.ssoSigninUrl())
+                loadUrl(auth.ssoSigninUrl())
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
                 )

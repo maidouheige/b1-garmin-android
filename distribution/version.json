@@ -1,7 +1,7 @@
 {
-  "versionCode": 38,
-  "versionName": "0.18.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.18.0.apk",
-  "notes": "v0.18.0:内置阿福体脂算法为出厂默认(阻抗+3.8/BMI-0.8),新装即对齐阿福无需校准;真机已有校准值优先不受影响;对不上再手动校准",
-  "size": 9714674
+  "versionCode": 39,
+  "versionName": "0.19.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.0.apk",
+  "notes": "v0.19.0:新增佳明国内版登录口子(国际/国内切换,token按区隔离,默认国际版零影响);新增A1体脂秤实验性支持(FFB0/AC帧,独立会话不影响B1,阻抗待真机校准);调试日志增加复制按钮方便回传;14项单测通过",
+  "size": 9735158
 }

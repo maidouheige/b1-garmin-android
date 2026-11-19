@@ -38,8 +38,11 @@ class ScaleReader(private val context: Context) {
         private const val TAG = "ScaleReader"
         private val SERVICE = UUID.fromString(AfuProtocol.SERVICE_UUID)
 
-        /** 名字里出现这些关键字就认为是候选秤 */
-        private val NAME_HINTS = listOf("AFU", "B1", "BH-TZ", "薄荷", "MINT", "SCALE", "TZ-B1")
+        /** 名字里出现这些关键字就认为是候选秤（含实验性 A1） */
+        private val NAME_HINTS = listOf(
+            "AFU", "B1", "BH-TZ", "薄荷", "MINT", "SCALE", "TZ-B1",
+            "AFU-WL", "WL-TZ-A1", "UAF028", "FG2508",
+        )
     }
 
     data class Device(

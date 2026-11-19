@@ -1,6 +1,9 @@
 package com.example.b1garmin
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -51,6 +54,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var auth: GarminAuth
     private lateinit var scale: ScaleReader
     private val logs = mutableStateListOf<String>()
+
+    /**
+     * 佳明服务器区域：国际版 .com / 国内版 .cn，两套账号数据不互通。
+     * 默认国际版（老用户零影响），用户的选择存 prefs，切换时重建 auth。
+     */
+    private val regionState = mutableStateOf(GarminAuth.Region.GLOBAL)
 
     /** 已上传记录账本：同一次称重不会重复写进 Garmin */
     private val ledger by lazy { getSharedPreferences("b1_ledger", MODE_PRIVATE) }
@@ -208,7 +217,7 @@ class MainActivity : ComponentActivity() {
      * @return “成功上传数” to “跳过数”
      */
     private suspend fun uploadRecords(
-        recs: List<ScaleSession.Measurement>,
+        recs: List<com.example.b1garmin.ble.A1Session.Measurement>,
         addr: String,
         targetName: String,
     ): Pair<Int, Int> {
@@ -357,33 +366,42 @@ class MainActivity : ComponentActivity() {
             val targetKg = profileState.value.targetKg.takeIf { it > 0.0 }
                 ?: (h * h * 22.0 / 10000.0)
 
+            // 实时回调：B1/A1 共用，BLE 回调在 Binder 线程，必须切主线程更新 Compose 状态
+            val onLiveCb: (Double, Boolean) -> Unit = { kg, locked ->
+                ui.post {
+                    if (!hasLiveThisRound) {
+                        hasLiveThisRound = true
+                        liveEstimate = null
+                        liveResistance = 0.0
+                    }
+                    liveKg = kg
+                    liveLocked = locked
+                    livePhase = if (locked) "体重已锁定 · 光脚站稳别动，等体脂" else "正在称重…"
+                }
+            }
+            val onImpCb: (Double) -> Unit = { ohm ->
+                ui.post {
+                    liveResistance = ohm
+                    liveEstimate = BodyComp.estimate(
+                        liveKg, h, a, profileState.value.sexText, ohm, savedOffsets(addr)
+                    )
+                    livePhase = "✓ 体成分已算出，数据已更新"
+                }
+            }
+
             try {
-                val recs = ScaleSession(this@MainActivity, target, { log(it) }).run(
-                    a, male, targetKg,
-                    onLive = { kg, locked ->
-                        // BLE 回调在 Binder 线程，必须切主线程更新 Compose 状态
-                        ui.post {
-                            if (!hasLiveThisRound) {
-                                hasLiveThisRound = true
-                                liveEstimate = null
-                                liveResistance = 0.0
-                            }
-                            liveKg = kg
-                            liveLocked = locked
-                            livePhase = if (locked) "体重已锁定 · 光脚站稳别动，等体脂" else "正在称重…"
-                        }
-                    },
-                    onImpedance = { ohm ->
-                        ui.post {
-                            liveResistance = ohm
-                            liveEstimate = BodyComp.estimate(
-                                liveKg, h, a, profileState.value.sexText, ohm, savedOffsets(addr)
-                            )
-                            livePhase = "✓ 体成分已算出，数据已更新"
-                        }
-                    },
-                    standby = true,
-                )
+                val recs: List<com.example.b1garmin.ble.A1Session.Measurement> =
+                    if (isA1Device(target.name)) {
+                        // 实验性 A1：独立会话，和 B1 状态机完全隔离
+                        log("识别为 A1 体脂秤（实验性协议）")
+                        com.example.b1garmin.ble.A1Session(this@MainActivity, addr, { log(it) }).run(
+                            a, male, h.toInt(), targetKg, onLiveCb, onImpCb, standby = true
+                        ).let { list -> list.map { com.example.b1garmin.ble.A1Session.Measurement(it.timestampSec, it.weightKg, it.resistanceOhm, it.fromHistory) } }
+                    } else {
+                        ScaleSession(this@MainActivity, target, { log(it) }).run(
+                            a, male, targetKg, onLiveCb, onImpCb, standby = true
+                        ).map { com.example.b1garmin.ble.A1Session.Measurement(it.timestampSec, it.weightKg, it.resistanceOhm, it.fromHistory) }
+                    }
 
                 if (recs.isNotEmpty()) {
                     val (ok, _) = uploadRecords(recs, addr, target.name)
@@ -463,6 +481,21 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+    /** 判断扫描到的秤是不是 A1（实验性支持）。B1 不受影响。 */
+    private fun isA1Device(name: String): Boolean =
+        com.example.b1garmin.protocol.A1Protocol.NAME_HINTS.any { name.contains(it, ignoreCase = true) }
+
+    /** 切换佳明区域：重建 auth（各自独立的 token），刷新登录态，持久化选择。 */
+    private fun switchRegion(region: GarminAuth.Region) {
+        if (regionState.value == region) return
+        regionState.value = region
+        prefs.edit().putString("garmin_region", region.name).apply()
+        auth = GarminAuth(this, region)
+        auth.setLogSink { log(it) }
+        loggedInState.value = auth.load() != null
+        log("已切换到佳明${region.label}（${region.domain}），${if (loggedInState.value) "读取到已有登录" else "尚未登录"}")
+    }
+
     private fun askPermissions() {
         val need = requiredPermissions()
         if (need.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
@@ -472,7 +505,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        auth = GarminAuth(this)
+        val savedRegion = try {
+            prefs.getString("garmin_region", GarminAuth.Region.GLOBAL.name)?.let {
+                GarminAuth.Region.valueOf(it)
+            } ?: GarminAuth.Region.GLOBAL
+        } catch (e: Exception) { GarminAuth.Region.GLOBAL }
+        regionState.value = savedRegion
+        auth = GarminAuth(this, savedRegion)
         scale = ScaleReader(this)
         auth.setLogSink { log(it) }
         loggedInState.value = auth.load() != null
@@ -562,9 +601,11 @@ class MainActivity : ComponentActivity() {
                         onClose = { showSettings = false; showSettingsHub = true }
                     )
                 } else if (showLogin) {
-                    val web = remember {
+                    val currentRegion = regionState.value
+                    val web = remember(currentRegion) {
                         WebLogin(
                             this,
+                            auth = auth,
                             onTicket = { ticket ->
                                 log("抓到 ticket（长度 ${ticket.length}），正在换取 token…")
                                 showLogin = false
@@ -596,6 +637,8 @@ class MainActivity : ComponentActivity() {
                     LoginScreen(
                         loggedIn = loggedIn,
                         loggedInState = loggedInState,
+                        region = regionState.value,
+                        onRegionChange = { switchRegion(it) },
                         onWebLogin = { showLogin = true },
                         onBack = { showLoginPage = false; showSettingsHub = true },
                     )
@@ -611,6 +654,7 @@ class MainActivity : ComponentActivity() {
                     SettingsHubScreen(
                         version = versionName(),
                         loggedIn = loggedIn,
+                        regionLabel = regionState.value.label,
                         onBack = { showSettingsHub = false },
                         onOpenProfile = { showSettings = true },
                         onOpenLogin = { showLoginPage = true },
@@ -1331,8 +1375,21 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Column(Modifier.padding(10.dp)) {
                             Text(logs.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = { logs.clear(); summary = "" }) {
-                                Text("清空日志", style = MaterialTheme.typography.bodySmall)
+                            Row {
+                                TextButton(onClick = {
+                                    try {
+                                        val cb = this@MainActivity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        cb.setPrimaryClip(ClipData.newPlainText("B1日志", logs.joinToString("\n")))
+                                        ui.post { summary = "✓ 日志已复制，可粘贴发给别人" }
+                                    } catch (e: Exception) {
+                                        ui.post { summary = "复制失败：${e.message}" }
+                                    }
+                                }) {
+                                    Text("复制日志", style = MaterialTheme.typography.bodySmall)
+                                }
+                                TextButton(onClick = { logs.clear(); summary = "" }) {
+                                    Text("清空日志", style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
@@ -1349,6 +1406,7 @@ class MainActivity : ComponentActivity() {
     private fun SettingsHubScreen(
         version: String,
         loggedIn: Boolean,
+        regionLabel: String,
         onBack: () -> Unit,
         onOpenProfile: () -> Unit,
         onOpenLogin: () -> Unit,
@@ -1391,7 +1449,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(
-                            if (loggedIn) "● Garmin 已登录（国际版）" else "○ Garmin 未登录",
+                            if (loggedIn) "● Garmin 已登录（$regionLabel）" else "○ Garmin 未登录（$regionLabel）",
                             color = if (loggedIn) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodyMedium
@@ -1960,6 +2018,8 @@ class MainActivity : ComponentActivity() {
     private fun LoginScreen(
         loggedIn: Boolean,
         loggedInState: androidx.compose.runtime.MutableState<Boolean>,
+        region: GarminAuth.Region,
+        onRegionChange: (GarminAuth.Region) -> Unit,
         onWebLogin: () -> Unit,
         onBack: () -> Unit,
     ) {
@@ -1989,8 +2049,30 @@ class MainActivity : ComponentActivity() {
                 }
                 Spacer(Modifier.height(12.dp))
 
+                Text("账号区域", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    GarminAuth.Region.entries.forEach { r ->
+                        val selected = r == region
+                        Button(
+                            onClick = { if (!selected) onRegionChange(r) },
+                            modifier = Modifier.weight(1f).padding(end = if (r == GarminAuth.Region.GLOBAL) 4.dp else 0.dp),
+                            colors = if (selected) ButtonDefaults.buttonColors()
+                            else ButtonDefaults.outlinedButtonColors(),
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(if (selected) "● ${r.label}" else r.label)
+                        }
+                    }
+                }
+                Text("国际版与国内版账号不互通，请选对区域；切换后各自独立登录。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(10.dp))
+
                 Text(
-                    if (loggedIn) "● 当前已登录 Garmin（国际版）" else "○ 尚未登录，请登录 Garmin 国际版账号",
+                    if (loggedIn) "● 当前已登录 Garmin（${region.label}）" else "○ 尚未登录，请登录 Garmin ${region.label}账号",
                     color = if (loggedIn) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodyMedium
@@ -2037,8 +2119,8 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.outline)
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "说明：这里登录的是 Garmin 国际区账号（connect.garmin.com），" +
-                            "中国区账号不适用。登录成功后回到首页称重同步即可。",
+                    "说明：当前登录的是 Garmin ${region.label}账号（connect.garmin.${region.domain.removePrefix("garmin.")}），" +
+                            "登录成功后回到首页称重同步即可。数据只会发往你选的这个区。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline
                 )

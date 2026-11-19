@@ -25,24 +25,25 @@ import java.util.concurrent.TimeUnit
  *
  * 注意 ticket 是一次性的，且 service_url 必须与 SSO 登录时的 service 完全一致。
  */
-class GarminAuth(private val context: Context) {
+class GarminAuth(private val context: Context, val region: Region = Region.GLOBAL) {
+    /** 佳明两个服务器完全独立、数据不互通，接口结构相同，只是域名不同。 */
+    enum class Region(val label: String, val domain: String) {
+        GLOBAL("国际版", "garmin.com"),
+        CHINA("国内版", "garmin.cn"),
+    }
+
     companion object {
         private const val TAG = "GarminAuth"
         private const val PREFS = "garmin_tokens"
 
         // ---- SSO（移动端 iOS 流程，实测最稳） ----
         const val IOS_CLIENT_ID = "GCM_IOS_DARK"
-        const val IOS_SERVICE_URL = "https://mobile.integration.garmin.com/gcm/ios"
-        private const val SSO_URL = "https://sso.garmin.com"
         private const val SIGNIN_PATH = "/mobile/sso/en_US/sign-in"
         private const val LOGIN_PATH = "/mobile/api/login"
         private const val IOS_UA =
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
 
         // ---- DI OAuth2 token 端点 ----
-        private const val DI_TOKEN_URL = "https://diauth.garmin.com/di-oauth2-service/oauth/token"
-        private const val DI_GRANT_TYPE =
-            "https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket"
         private val DI_CLIENT_IDS = listOf(
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2024Q4",
@@ -57,14 +58,25 @@ class GarminAuth(private val context: Context) {
 
         private val JSON_MEDIA = "application/json".toMediaType()
 
-        /** SSO 登录页（WebView 用），service 必须与下面换 token 时一致 */
-        fun ssoSigninUrl(): String =
-            "$SSO_URL$SIGNIN_PATH?clientId=$IOS_CLIENT_ID&service=" +
-                    java.net.URLEncoder.encode(IOS_SERVICE_URL, "UTF-8")
-
         fun isGarminMobileLoginUrl(url: String): Boolean =
             url.contains(LOGIN_PATH) || url.contains("/mobile/api/mfa")
     }
+
+    // ---- 按区域动态生成的域名（国际版 .com / 国内版 .cn，接口路径完全一致） ----
+    private val domain = region.domain
+    private val ssoUrl = "https://sso.$domain"
+    private val iosServiceUrl = "https://mobile.integration.$domain/gcm/ios"
+    private val diTokenUrl = "https://diauth.$domain/di-oauth2-service/oauth/token"
+    private val diGrantType = "https://connectapi.$domain/di-oauth2-service/oauth/grant/service_ticket"
+    private val connectApi = "https://connectapi.$domain"
+
+    /** 两个区的 token 分开存，切换登录不会串号；国际版沿用旧 key，老用户不丢登录。 */
+    private val prefsName = if (region == Region.GLOBAL) PREFS else "${PREFS}_${region.name}"
+
+    /** SSO 登录页（WebView 用），service 必须与下面换 token 时一致 */
+    fun ssoSigninUrl(): String =
+        "$ssoUrl$SIGNIN_PATH?clientId=$IOS_CLIENT_ID&service=" +
+                java.net.URLEncoder.encode(iosServiceUrl, "UTF-8")
 
     data class Tokens(
         val accessToken: String,
@@ -74,7 +86,7 @@ class GarminAuth(private val context: Context) {
         val clientId: String = "",
     )
 
-    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
     /** 必须带 CookieJar，否则 SSO 登录页设的 cookie 丢失 → 403/429。 */
     private val client = OkHttpClient.Builder()
@@ -121,7 +133,7 @@ class GarminAuth(private val context: Context) {
     suspend fun loginWithPassword(email: String, password: String): Result<Tokens> =
         withContext(Dispatchers.IO) {
             try {
-                val signinUrl = Companion.ssoSigninUrl()
+                val signinUrl = ssoSigninUrl()
                 log("① 请求登录页…")
                 val signinResp = client.newCall(
                     Request.Builder().url(signinUrl)
@@ -150,15 +162,15 @@ class GarminAuth(private val context: Context) {
                     put("captchaToken", "")
                 }.toString()
 
-                val loginUrl = "$SSO_URL$LOGIN_PATH?clientId=$IOS_CLIENT_ID&locale=en-US&service=" +
-                        java.net.URLEncoder.encode(IOS_SERVICE_URL, "UTF-8")
+                val loginUrl = "$ssoUrl$LOGIN_PATH?clientId=$IOS_CLIENT_ID&locale=en-US&service=" +
+                        java.net.URLEncoder.encode(iosServiceUrl, "UTF-8")
                 val loginResp = client.newCall(
                     Request.Builder().url(loginUrl)
                         .header("User-Agent", IOS_UA)
                         .header("Accept", "application/json, text/plain, */*")
                         .header("Accept-Language", "en-US,en;q=0.9")
                         .header("Content-Type", "application/json")
-                        .header("Origin", SSO_URL)
+                        .header("Origin", ssoUrl)
                         .header("Referer", signinUrl)
                         .post(payload.toRequestBody(JSON_MEDIA))
                         .build()
@@ -186,7 +198,7 @@ class GarminAuth(private val context: Context) {
                             return@withContext Result.failure(Exception("登录成功但没拿到 ticket"))
                         }
                         log("④ 拿到 ticket（长度 ${ticket.length}），换取 token…")
-                        exchangeToDiToken(ticket, IOS_SERVICE_URL)
+                        exchangeToDiToken(ticket, iosServiceUrl)
                     }
                     "MFA_REQUIRED" -> Result.failure(
                         Exception("该账号开启了两步验证，请用上面的「网页登录」方式")
@@ -219,7 +231,7 @@ class GarminAuth(private val context: Context) {
      */
     suspend fun exchangeTicket(ticket: String): Result<Tokens> = withContext(Dispatchers.IO) {
         log("用 ticket 换 token（长度 ${ticket.length}）…")
-        exchangeToDiToken(ticket, IOS_SERVICE_URL)
+        exchangeToDiToken(ticket, iosServiceUrl)
     }
 
     // ====================================================================
@@ -234,12 +246,12 @@ class GarminAuth(private val context: Context) {
                     val form = FormBody.Builder()
                         .add("client_id", cid)
                         .add("service_ticket", ticket)
-                        .add("grant_type", DI_GRANT_TYPE)
+                        .add("grant_type", diGrantType)
                         .add("service_url", serviceUrl)
                         .build()
 
                     val req = Request.Builder()
-                        .url(DI_TOKEN_URL)
+                        .url(diTokenUrl)
                         .headers(nativeHeaders(mapOf(
                             "Authorization" to basicAuth(cid),
                             "Accept" to "application/json,text/html;q=0.9,*/*;q=0.8",
@@ -296,7 +308,7 @@ class GarminAuth(private val context: Context) {
                 .add("client_id", cid)
                 .add("refresh_token", old.refreshToken)
                 .build()
-            val req = Request.Builder().url(DI_TOKEN_URL)
+            val req = Request.Builder().url(diTokenUrl)
                 .headers(nativeHeaders(mapOf(
                     "Authorization" to basicAuth(cid),
                     "Accept" to "application/json",
@@ -375,7 +387,7 @@ class GarminAuth(private val context: Context) {
                     )
                     .build()
                 val req = Request.Builder()
-                    .url("https://connectapi.garmin.com/upload-service/upload")
+                    .url("$connectApi/upload-service/upload")
                     .headers(nativeHeaders(mapOf("Authorization" to "Bearer ${token.accessToken}")))
                     .post(body).build()
                 client.newCall(req).execute().use { resp ->
@@ -416,7 +428,7 @@ class GarminAuth(private val context: Context) {
                 return@withContext WeighInLookup.Failed(it.message ?: "未登录")
             }
             try {
-                val url = "https://connectapi.garmin.com/weight-service/weight/dayview/$dateStr" +
+                val url = "$connectApi/weight-service/weight/dayview/$dateStr" +
                         "?includeAll=true"
                 val req = Request.Builder()
                     .url(url)
@@ -455,7 +467,7 @@ class GarminAuth(private val context: Context) {
         withContext(Dispatchers.IO) {
             val token = validToken().getOrElse { return@withContext Result.failure(it) }
             try {
-                val url = "https://connectapi.garmin.com/weight-service/weight/$dateStr" +
+                val url = "$connectApi/weight-service/weight/$dateStr" +
                         "/byversion/$samplePk"
                 val req = Request.Builder()
                     .url(url).delete()
