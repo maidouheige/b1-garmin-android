@@ -246,4 +246,21 @@ class ProtocolTest {
         assertEquals("https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket", gt)
         assertFalse("grant_type 不能带 .cn", gt.contains("garmin.cn"))
     }
+
+    /** 测试版模拟 A1 造的假帧，必须能被真实 parse() 正确解出体重/阻抗/锁定态。 */
+    @Test
+    fun mockA1FakeFrameRoundTripsThroughRealParser() {
+        val frame = com.example.b1garmin.protocol.A1Protocol.buildFakeFrame(67.3, 575, 519,
+            com.example.b1garmin.protocol.A1Protocol.TYPE_FINAL)
+        val p = com.example.b1garmin.protocol.A1Protocol.parse(frame)!!
+        assertTrue(p.locked)
+        assertEquals(67.3, p.weightKg!!, 0.01)
+        assertEquals(575, p.impedance1)
+        assertEquals(519, p.impedance2)
+        // LIVE 帧不能被判为锁定
+        val live = com.example.b1garmin.protocol.A1Protocol.parse(
+            com.example.b1garmin.protocol.A1Protocol.buildFakeFrame(66.5, 575, 519,
+                com.example.b1garmin.protocol.A1Protocol.TYPE_LIVE))!!
+        assertFalse(live.locked)
+    }
 }

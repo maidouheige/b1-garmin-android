@@ -74,5 +74,20 @@ object A1Protocol {
         (heightCm and 0xFF).toByte(),
     )
 
+    /**
+     * 构造一帧模拟 AC 帧（仅测试版模拟称重用）：把体重/阻抗按真实字节布局写进去，
+     * 再交给 parse() 走真实解析链，从而在没蓝牙的模拟器里验证 A1 协议解析本身。
+     */
+    fun buildFakeFrame(weightKg: Double, impedance1: Int, impedance2: Int, type: Int): ByteArray {
+        val f = ByteArray(FRAME_SIZE)
+        f[0] = MAGIC
+        f[2] = type.toByte()
+        f[4] = (impedance1 shr 8).toByte(); f[5] = impedance1.toByte()
+        f[6] = (impedance2 shr 8).toByte(); f[7] = impedance2.toByte()
+        val rawW = (weightKg * 1000).toInt() + 0x680000
+        f[10] = (rawW shr 16).toByte(); f[11] = (rawW shr 8).toByte(); f[12] = rawW.toByte()
+        return f
+    }
+
     fun toHex(b: ByteArray) = b.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
 }
