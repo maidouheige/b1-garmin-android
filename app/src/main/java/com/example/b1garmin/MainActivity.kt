@@ -401,8 +401,8 @@ class MainActivity : ComponentActivity() {
             }
 
             try {
-                // 通道判定：已绑定就用绑定时定死的型号，没绑定才按名字猜（保持旧行为）
-                val useA1 = bound?.isA1 ?: isA1Device(target.name)
+                // 通道判定：已绑定就用绑定时定死的型号，没绑定才按广播名/服务认（与扫描、绑定页同一套判定）。
+                val useA1 = bound?.isA1 ?: (scale.detectModel(target.name, target.hasA1Service) == "A1")
                 val recs: List<com.example.b1garmin.ble.A1Session.Measurement> =
                     if (useA1) {
                         // 实验性 A1：独立会话，和 B1 状态机完全隔离
@@ -493,10 +493,6 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.ACCESS_COARSE_LOCATION,
             )
         }
-
-    /** 判断扫描到的秤是不是 A1（实验性支持）。B1 不受影响。 */
-    private fun isA1Device(name: String): Boolean =
-        com.example.b1garmin.protocol.A1Protocol.NAME_HINTS.any { name.contains(it, ignoreCase = true) }
 
     /** 切换佳明区域：重建 auth（各自独立的 token），刷新登录态，持久化选择。 */
     private fun switchRegion(region: GarminAuth.Region) {

@@ -138,7 +138,7 @@ class ScaleReader(private val context: Context) {
 
     /** 按广播名/服务自动判定型号：命中 A1 关键字或带 FFB0 服务即 A1，否则 B1。绑定页用它给设备打标。 */
     fun detectModel(name: String, hasA1Service: Boolean = false): String =
-        if (hasA1Service || A1Protocol.NAME_HINTS.any { name.contains(it, ignoreCase = true) }) "A1" else "B1"
+        if (A1Protocol.matchesNameOrService(name, hasA1Service)) "A1" else "B1"
 
     fun boundScale(): BoundScale? {
         val addr = prefs.getString("bound_addr", null) ?: return null

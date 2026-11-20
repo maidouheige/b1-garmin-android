@@ -264,6 +264,22 @@ class ProtocolTest {
         assertFalse(live.locked)
     }
 
+    /**
+     * A1 型号判定必须是名字或服务二选一即可，三处（扫描/绑定/通道）共用这一份。
+     * 名字是自定义的 A1 只要广播带 FFB0 服务就得认出来，否则会被误判成 B1 走错协议。
+     */
+    @Test
+    fun a1DetectedByNameOrFfb0Service() {
+        // 名字命中关键字
+        assertTrue(com.example.b1garmin.protocol.A1Protocol.matchesNameOrService("UAF028-1234"))
+        assertTrue(com.example.b1garmin.protocol.A1Protocol.matchesNameOrService("WL-TZ-A1"))
+        // 名字普通、但带 FFB0 服务 → 仍判 A1（上一轮的遗漏就在这里）
+        assertTrue(com.example.b1garmin.protocol.A1Protocol.matchesNameOrService("My Scale", true))
+        // 两者都没有 → 不是 A1
+        assertFalse(com.example.b1garmin.protocol.A1Protocol.matchesNameOrService("My Scale", false))
+        assertFalse(com.example.b1garmin.protocol.A1Protocol.matchesNameOrService("", false))
+    }
+
     /** 更新说明按中英文分号拆条，空串/纯空白不占位置，弹窗逐条展示。 */
     @Test
     fun updateNotesSplitIntoLines() {

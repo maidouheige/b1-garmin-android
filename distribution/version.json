@@ -1,7 +1,7 @@
 {
-  "versionCode": 41,
-  "versionName": "0.19.2",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.2.apk",
-  "notes": "A1 连接提速：首轮扫描不再被 B1 专用过滤挡住，A1/B1 现在都能第一轮就被发现；A1 广播带 FFB0 服务即可自动识别型号，绑定不再被误判成 B1；检查更新弹窗改为逐条清晰展示本次更新内容；其余同步/蓝牙/体脂算法逻辑不变",
-  "size": 9751538
+  "versionCode": 42,
+  "versionName": "0.19.3",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.3.apk",
+  "notes": "修复A1型号判定不一致:名字自定义但带FFB0服务的A1之前会被扫到却误判成B1走错协议,现在扫描/绑定/通道三处统一判定；其余称重、同步、体脂算法不变",
+  "size": 9751542
 }

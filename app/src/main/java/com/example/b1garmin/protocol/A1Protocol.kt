@@ -30,6 +30,15 @@ object A1Protocol {
     /** 广播名关键字（A1 平时不广播，轻踩秤面才唤醒） */
     val NAME_HINTS = listOf("AFU-WL", "WL-TZ-A1", "UAF028", "FG2508")
 
+    /**
+     * 是不是 A1 的判定入口（型号判定的唯一权威）：广播名命中关键字，或带 FFB0 服务。
+     *
+     * 扫描命中、绑定页打标、自动监听选通道三处必须共用这一份逻辑，
+     * 否则会出现「扫得到、绑得上、却走错协议」的不一致。
+     */
+    fun matchesNameOrService(name: String, hasA1Service: Boolean = false): Boolean =
+        hasA1Service || NAME_HINTS.any { name.contains(it, ignoreCase = true) }
+
     data class Parsed(
         val type: Int,
         val weightKg: Double?,
