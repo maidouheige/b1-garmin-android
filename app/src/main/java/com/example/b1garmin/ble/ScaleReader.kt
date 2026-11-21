@@ -326,6 +326,77 @@ class ScaleReader(private val context: Context) {
         }
     }
 
+    /**
+     * 监听小米秤（S400/S800）的加密广播帧。小米秤不建 GATT 连接，只被动广播 MiBeacon。
+     *
+     * @param address 目标秤 MAC（用户在绑定页填）
+     * @param onFrame 每收到一帧该 MAC 的有效解析结果就回调（解密失败/非测量帧不会回调）
+     * @param timeoutMs 最长监听时长；期间由调用方决定何时收齐（通常体重帧+阻抗帧两帧）
+     */
+    suspend fun watchMiBeacon(
+        address: String,
+        bindkeyHex: String,
+        timeoutMs: Long,
+        onFrame: (com.example.b1garmin.scale.xiaomi.XiaomiBeacon.Parsed) -> Unit,
+        onLog: (String) -> Unit = {},
+        shouldStop: () -> Boolean = { false },
+    ) {
+        diagnose()?.let { throw IllegalStateException(it) }
+        val scanner = adapter?.bluetoothLeScanner
+            ?: throw IllegalStateException("蓝牙扫描器不可用")
+
+        val fe95 = android.os.ParcelUuid.fromString(
+            com.example.b1garmin.scale.xiaomi.XiaomiBeacon.FE95_SERVICE_UUID)
+        val targetMac = address.trim().uppercase()
+        val seenFrames = HashSet<Int>()
+
+        val cb = object : ScanCallback() {
+            @Volatile var stop = false
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                if (stop) return
+                val devAddr = result.device?.address?.uppercase() ?: return
+                // 若用户没填 MAC（空）则不过滤，但绑定流程要求填，所以通常精确匹配
+                if (targetMac.isNotBlank() && devAddr != targetMac) return
+                val rec = result.scanRecord ?: return
+                val raw = rec.serviceData[fe95] ?: return
+                val parsed = com.example.b1garmin.scale.xiaomi.XiaomiBeacon.parse(raw, devAddr, bindkeyHex)
+                    ?: return
+                // 帧计数去重：同一帧会被连续广播很多次
+                if (!seenFrames.add(parsed.frameCount)) return
+                onLog("小米帧 #${parsed.frameCount} 体重=${parsed.weightKg}kg 阻抗=${parsed.impedanceOhm}Ω 心率=${parsed.heartRateBpm}")
+                onFrame(parsed)
+                // 收齐就停（回调里更新了状态，谓词据此判断）
+                if (shouldStop()) {
+                    stop = true
+                    try { scanner.stopScan(this) } catch (e: Exception) {}
+                }
+            }
+            override fun onScanFailed(errorCode: Int) {
+                onLog("小米广播扫描失败：$errorCode")
+            }
+        }
+
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+        try {
+            // 用 FE95 service UUID 过滤，减少无关设备回调
+            scanner.startScan(listOf(ScanFilter.Builder().setServiceUuid(fe95).build()), settings, cb)
+        } catch (e: Exception) {
+            throw e
+        }
+        try {
+            // 每 200ms 检查是否收齐；收齐或超时就停，不让调用方死等满 40 秒
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                if (shouldStop()) break
+                kotlinx.coroutines.delay(200)
+            }
+        } finally {
+            try { scanner.stopScan(cb) } catch (e: Exception) {}
+        }
+    }
+
     private fun rank(list: List<Device>): List<Device> = list.sortedWith(
         compareByDescending<Device> { it.hasAfuService || it.hasA1Service }
             .thenByDescending { d -> NAME_HINTS.any { d.name.contains(it, true) } }

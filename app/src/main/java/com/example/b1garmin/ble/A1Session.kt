@@ -42,6 +42,10 @@ class A1Session(
         val weightKg: Double,
         val resistanceOhm: Double?,
         val fromHistory: Boolean = false,
+        /** 荣耀秤会一并推心率，阿福没有这个字段 */
+        val heartRateBpm: Int? = null,
+        /** 荣耀秤自己算好的体脂率（偏移 2，/10），华为 App 直接用它，不再重算 */
+        val scaleFatPercent: Double? = null,
     )
 
     /**

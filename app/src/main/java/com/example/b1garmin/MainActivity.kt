@@ -14,8 +14,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,16 +30,23 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.b1garmin.ble.ScaleReader
-import com.example.b1garmin.ble.ScaleSession
 import com.example.b1garmin.garmin.GarminAuth
 import com.example.b1garmin.garmin.WebLogin
 import com.example.b1garmin.protocol.BodyComp
 import com.example.b1garmin.protocol.FitWriter
+import com.example.b1garmin.scale.BodyCompStandard
+import com.example.b1garmin.scale.ScaleCatalog
+import com.example.b1garmin.scale.ScaleMeasurement
+import com.example.b1garmin.scale.ScaleUser
 import com.example.b1garmin.ui.CalibStore
 import com.example.b1garmin.ui.Profile
 import com.example.b1garmin.ui.ProfileStore
@@ -129,6 +139,11 @@ class MainActivity : ComponentActivity() {
     private var listenJob: kotlinx.coroutines.Job? = null
     /** 本轮是否已经有人上过秤（用来判断新一次称重开始、清掉上一次的体成分） */
     private var hasLiveThisRound = false
+    /** Garmin 账号头像（登录成功后从 socialProfile 拉取）；null = 没登录/加载中/加载失败 */
+    private var garminAvatar by mutableStateOf<ImageBitmap?>(null)
+    /** Garmin 账号显示名（头像旁的文字） */
+    private var garminName by mutableStateOf("")
+    private var profileJob: kotlinx.coroutines.Job? = null
     /** 进校准页前是否开着监听，返回时据此恢复 */
     private var resumeListenAfterCalib = false
     /** 进绑定页前是否开着监听，返回时据此恢复 */
@@ -219,16 +234,23 @@ class MainActivity : ComponentActivity() {
      * @return “成功上传数” to “跳过数”
      */
     private suspend fun uploadRecords(
-        recs: List<com.example.b1garmin.ble.A1Session.Measurement>,
+        recs: List<ScaleMeasurement>,
         addr: String,
         targetName: String,
+        /** 该型号的体成分口径：华为/荣耀不走阿福的阻抗提示与校准偏移 */
+        standard: BodyCompStandard = BodyCompStandard.AFU,
     ): Pair<Int, Int> {
+        val honor = standard == BodyCompStandard.HUAWEI
         val h = profileState.value.heightCm
         val a = profileState.value.age
         var okCount = 0
         var skipCount = 0
         log("本次拿到 ${recs.size} 条记录（带阻抗 ${recs.count { it.resistanceOhm != null }} 条），开始上传…")
-        if (recs.none { it.resistanceOhm != null }) {
+        if (honor) {
+            if (recs.all { it.resistanceOhm == null }) {
+                log("⚠ 这次没测到阻抗：体脂率退回 BMI 公式估算（光脚踩满四个电极更准）")
+            }
+        } else if (recs.none { it.resistanceOhm != null }) {
             log("⚠ 这次没测到阻抗：体脂率只能按体重估算，反映不了真实体成分")
             log("   光脚、脚底微湿、四个电极都踩到、站直别动，再称一次更容易出阻抗")
         } else if (calibOf(addr).imp == null) {
@@ -236,6 +258,18 @@ class MainActivity : ComponentActivity() {
                 .format(BodyComp.Offsets.AFU_FACTORY.imp ?: 0.0))
             log("   已默认对齐阿福；只有实测和阿福对不上时，才需要去「设置 → 体脂率校准」校准")
         }
+
+        fun estimateOf(rec: ScaleMeasurement): BodyComp.Estimate? =
+            if (honor) {
+                BodyComp.estimateHuawei(
+                    rec.weightKg, h, a, profileState.value.sexText, rec.resistanceOhm,
+                    rec.scaleFatPercent)
+            } else {
+                BodyComp.estimate(
+                    rec.weightKg, h, a, profileState.value.sexText,
+                    rec.resistanceOhm, savedOffsets(addr))
+            }
+
         recs.forEach { rec ->
             val whenStr = java.text.SimpleDateFormat("MM-dd HH:mm")
                 .format(java.util.Date(rec.timestampSec * 1000))
@@ -259,31 +293,35 @@ class MainActivity : ComponentActivity() {
                 uploaded = true
             }
 
-            // 无论是否真的上传，都把这次称重记进验证台账
-            val rawBfForVerify = BodyComp.rawBf(
-                rec.weightKg, h, a, profileState.value.sexText, rec.resistanceOhm
-            ).first
-            val estForVerify = BodyComp.estimate(
-                rec.weightKg, h, a, profileState.value.sexText,
-                rec.resistanceOhm, savedOffsets(addr)
-            )
-            if (estForVerify != null) {
-                saveVerifyEntry(
-                    rec.timestampSec, rec.weightKg,
-                    rec.resistanceOhm ?: 0.0, rawBfForVerify,
-                    estForVerify.bodyFatPercent, addr
+            // 无论是否真的上传，都把这次称重记进验证台账（阿福的校准台账，荣耀秤不参与）
+            if (!honor) {
+                val rawBfForVerify = BodyComp.rawBf(
+                    rec.weightKg, h, a, profileState.value.sexText, rec.resistanceOhm
+                ).first
+                val estForVerify = BodyComp.estimate(
+                    rec.weightKg, h, a, profileState.value.sexText,
+                    rec.resistanceOhm, savedOffsets(addr)
                 )
+                if (estForVerify != null) {
+                    saveVerifyEntry(
+                        rec.timestampSec, rec.weightKg,
+                        rec.resistanceOhm ?: 0.0, rawBfForVerify,
+                        estForVerify.bodyFatPercent, addr
+                    )
+                }
             }
             if (!uploaded) return@forEach
 
-            val est = BodyComp.estimate(
-                rec.weightKg, h, a, profileState.value.sexText,
-                rec.resistanceOhm, savedOffsets(addr)
-            )
+            val est = estimateOf(rec)
             if (est == null) {
                 log("$whenStr ${rec.weightKg}kg ✗ 体成分推算失败")
                 return@forEach
             }
+            // 先打一行体成分明细：没登录也可以直接和手机厂商 App 对数
+            log("体成分 %.2fkg/%.0fcm/%d岁：体脂 %.1f%% · 骨骼肌 %.1fkg · 水分 %.1f%% · 骨盐 %.2fkg · BMR %dkcal · 内脏脂肪 %d · BMI %.1f"
+                .format(est.weightKg, h, a, est.bodyFatPercent, est.muscleMassKg,
+                    est.percentHydration, est.boneMassKg, est.basalMet,
+                    est.visceralFatRating, est.bmi))
             val fit = FitWriter.build(est, rec.timestampSec)
             val up = auth.uploadFit(fit, "weight_${rec.timestampSec}.fit")
             if (up.isSuccess) {
@@ -299,8 +337,10 @@ class MainActivity : ComponentActivity() {
                 saveAnchor(Anchor(rec.timestampSec, rec.weightKg,
                     rec.resistanceOhm ?: 0.0, addr))
                 okCount++
-                log("$whenStr ${rec.weightKg}kg ✓ 已上传（体脂 %.1f%% · 肌肉 %.1fkg · 水分 %.1f%%）"
-                    .format(est.bodyFatPercent, est.muscleMassKg, est.percentHydration))
+                val muscleLabel = if (honor) "骨骼肌" else "肌肉"
+                log("$whenStr ${rec.weightKg}kg ✓ 已上传（体脂 %.1f%% · $muscleLabel %.1fkg · 水分 %.1f%%%s）"
+                    .format(est.bodyFatPercent, est.muscleMassKg, est.percentHydration,
+                        rec.heartRateBpm?.let { " · 心率 ${it}bpm" } ?: ""))
             } else {
                 log("$whenStr ${rec.weightKg}kg ✗ ${up.exceptionOrNull()?.message}")
             }
@@ -327,6 +367,8 @@ class MainActivity : ComponentActivity() {
      * 每轮之间留 2 秒，避免疯狂重连；蓝牙/权限/登录没就绪时会等待，不打扰用户。
      */
     private suspend fun autoWeighLoop() {
+        /** 单次称重型号（华为/荣耀/小米）是正常收尾，不要把完成提示覆盖成「已停止」 */
+        var finishedSingleShot = false
         while (autoListen) {
             // 蓝牙或权限没就绪就等着，10 秒后再试
             val diag = scale.diagnose()
@@ -334,6 +376,51 @@ class MainActivity : ComponentActivity() {
                 livePhase = if (!scale.isBluetoothReady()) "请打开手机蓝牙" else "请授予蓝牙权限"
                 delay(3000)
                 continue
+            }
+
+            // 小米秤：绑定后走被动广播通道（不建 GATT 连接），findScale 靠名字认不出它，
+            // 必须在找秤之前分流。这里只处理已绑定的小米秤；未绑定的小米秤走正常扫描流程（通常认不出）。
+            val boundNow = scale.boundScale()
+            val boundModel = boundNow?.let { ScaleCatalog.byId(it.model) }
+            if (boundModel?.id?.startsWith("XIAOMI_") == true && boundNow != null) {
+                try {
+                    val hM = profileState.value.heightCm
+                    val aM = profileState.value.age
+                    val maleM = profileState.value.male
+                    val userM = ScaleUser(age = aM, male = maleM, heightCm = hM.toInt(),
+                        targetKg = profileState.value.targetKg.takeIf { it > 0.0 } ?: (hM * hM * 22.0 / 10000.0))
+                    ui.post { livePhase = "小米秤已就绪，光脚站上去（测量约需 15 秒）" }
+                    val recs = boundModel.protocol.measure(
+                        context = this@MainActivity,
+                        address = boundNow.address,
+                        name = boundNow.name,
+                        user = userM,
+                        standby = false,
+                        onLog = { log(it) },
+                        onLive = { kg, locked ->
+                            ui.post {
+                                if (!hasLiveThisRound) { hasLiveThisRound = true; liveEstimate = null; liveResistance = 0.0 }
+                                liveKg = kg; liveLocked = locked
+                                livePhase = if (locked) "✓ 体重 $kg kg，等阻抗…" else "正在读小米秤…"
+                            }
+                        },
+                        onImpedance = { ohm -> ui.post { liveResistance = ohm } },
+                    )
+                    if (recs.isNotEmpty()) {
+                        val (ok, _) = uploadRecords(recs, boundNow.address, boundNow.name, boundModel.bodyComp)
+                        ui.post { livePhase = if (ok > 0) "✓ 已同步 $ok 条到 Garmin" else "✓ 称重完成" }
+                    }
+                } catch (e: Exception) {
+                    log("✗ 小米秤监听出错：${e.message}")
+                    ui.post { livePhase = "小米秤读取出错，点「称重」重试" }
+                }
+                autoListen = false
+                finishedSingleShot = true
+                ui.post {
+                    livePhase = if (hasLiveThisRound || liveKg > 0) "✓ 称重完成（点「称重」再称一次）"
+                                else "没读到数据，请点「称重」重试"
+                }
+                break
             }
 
             // 找秤（记住的优先，扫到就停）
@@ -377,7 +464,14 @@ class MainActivity : ComponentActivity() {
             val targetKg = profileState.value.targetKg.takeIf { it > 0.0 }
                 ?: (h * h * 22.0 / 10000.0)
 
-            // 实时回调：B1/A1 共用，BLE 回调在 Binder 线程，必须切主线程更新 Compose 状态
+            // 型号判定：已绑定就用绑定时定死的型号，未绑定才按广播名/服务识别（与扫描、绑定页同一张注册表）。
+            // 注意：保留「未绑定也能用」的原有宽容行为——这是老用户更新后不重新绑定也能称的关键。
+            val modelInfo = bound?.let { ScaleCatalog.byId(it.model) }
+                ?: ScaleCatalog.match(target.name, target.hasAfuService, target.hasA1Service)
+                ?: ScaleCatalog.B1
+            val user = ScaleUser(age = a, male = male, heightCm = h.toInt(), targetKg = targetKg)
+
+            // 实时回调：BLE 回调在 Binder 线程，必须切主线程更新 Compose 状态
             val onLiveCb: (Double, Boolean) -> Unit = { kg, locked ->
                 ui.post {
                     if (!hasLiveThisRound) {
@@ -393,36 +487,64 @@ class MainActivity : ComponentActivity() {
             val onImpCb: (Double) -> Unit = { ohm ->
                 ui.post {
                     liveResistance = ohm
-                    liveEstimate = BodyComp.estimate(
-                        liveKg, h, a, profileState.value.sexText, ohm, savedOffsets(addr)
-                    )
+                    liveEstimate = if (modelInfo.bodyComp == BodyCompStandard.HUAWEI) {
+                        BodyComp.estimateHuawei(liveKg, h, a, profileState.value.sexText, ohm, null)
+                    } else {
+                        BodyComp.estimate(liveKg, h, a, profileState.value.sexText, ohm, savedOffsets(addr))
+                    }
                     livePhase = "✓ 体成分已算出，数据已更新"
                 }
             }
 
             try {
-                // 通道判定：已绑定就用绑定时定死的型号，没绑定才按广播名/服务认（与扫描、绑定页同一套判定）。
-                val useA1 = bound?.isA1 ?: (scale.detectModel(target.name, target.hasA1Service) == "A1")
-                val recs: List<com.example.b1garmin.ble.A1Session.Measurement> =
-                    if (useA1) {
-                        // 实验性 A1：独立会话，和 B1 状态机完全隔离
-                        log("识别为 A1 体脂秤（实验性协议${if (bound != null) "，已绑定" else ""}）")
-                        com.example.b1garmin.ble.A1Session(this@MainActivity, addr, { log(it) }).run(
-                            a, male, h.toInt(), targetKg, onLiveCb, onImpCb, standby = true
-                        ).let { list -> list.map { com.example.b1garmin.ble.A1Session.Measurement(it.timestampSec, it.weightKg, it.resistanceOhm, it.fromHistory) } }
-                    } else {
-                        ScaleSession(this@MainActivity, target, { log(it) }).run(
-                            a, male, targetKg, onLiveCb, onImpCb, standby = true
-                        ).map { com.example.b1garmin.ble.A1Session.Measurement(it.timestampSec, it.weightKg, it.resistanceOhm, it.fromHistory) }
-                    }
+                log("识别为 ${modelInfo.displayName}（${modelInfo.brand}${if (modelInfo.experimental) " · 实验性" else ""}）")
+                if (modelInfo.bodyComp == BodyCompStandard.HUAWEI) {
+                    ui.post { livePhase = "${modelInfo.brand}秤已连上，光脚站稳 15 秒（体重/体脂/心率一起测）" }
+                }
+                val recs = modelInfo.protocol.measure(
+                    context = this@MainActivity,
+                    address = addr,
+                    name = target.name,
+                    user = user,
+                    standby = !modelInfo.singleShot,
+                    onLog = { log(it) },
+                    onLive = onLiveCb,
+                    onImpedance = onImpCb,
+                )
 
                 if (recs.isNotEmpty()) {
-                    val (ok, _) = uploadRecords(recs, addr, target.name)
+                    // 华为/荣耀：首页体成分用秤端体脂口径，和上传时的算法保持一致
+                    if (modelInfo.bodyComp == BodyCompStandard.HUAWEI) {
+                        recs.firstOrNull { it.weightKg > 0 }?.let { r ->
+                            ui.post {
+                                liveKg = r.weightKg
+                                liveLocked = true
+                                r.resistanceOhm?.let { liveResistance = it }
+                                liveEstimate = BodyComp.estimateHuawei(
+                                    r.weightKg, h, a, profileState.value.sexText,
+                                    r.resistanceOhm, r.scaleFatPercent
+                                )
+                            }
+                        }
+                    }
+                    val (ok, _) = uploadRecords(recs, addr, target.name, modelInfo.bodyComp)
                     ui.post {
                         livePhase = if (ok > 0) "✓ 已同步 $ok 条到 Garmin" else "✓ 称重完成"
                     }
                 } else if (hasLiveThisRound) {
                     ui.post { livePhase = "这次没拿到完整数据，请再站一次" }
+                }
+
+                if (modelInfo.singleShot) {
+                    // 单次称重型号：称一次就结束，不在后台循环重连重复称
+                    autoListen = false
+                    finishedSingleShot = true
+                    ui.post {
+                        livePhase = if (hasLiveThisRound || recs.isNotEmpty())
+                            "✓ 称重完成（点「称重」再称一次）"
+                        else "没拿到完整数据，请点「称重」再试"
+                    }
+                    break
                 }
             } catch (e: Exception) {
                 log("✗ 监听出错：${e.message}")
@@ -431,7 +553,7 @@ class MainActivity : ComponentActivity() {
 
             delay(2000) // 秤断开后缓一下再重连
         }
-        ui.post { livePhase = "自动称重已停止" }
+        if (!finishedSingleShot) ui.post { livePhase = "自动称重已停止" }
     }
 
     /** 检查是否有新版本。silent=true（启动自动查）失败/无新版都不打扰；手动查则一定有可见反馈。 */
@@ -505,6 +627,29 @@ class MainActivity : ComponentActivity() {
         log("已切换到佳明${region.label}（${region.domain}），${if (loggedInState.value) "读取到已有登录" else "尚未登录"}")
     }
 
+    /** 拉 Garmin 账号资料（头像 + 显示名）。失败只记日志，不影响称重。 */
+    private fun loadGarminProfile(force: Boolean = false) {
+        if (auth.load() == null) {
+            garminAvatar = null
+            garminName = ""
+            return
+        }
+        if (!force && profileJob?.isActive == true) return
+        profileJob?.cancel()
+        profileJob = lifecycleScope.launch {
+            val p = auth.fetchSocialProfile().getOrElse {
+                log("读取 Garmin 账号资料失败（不影响称重）：${it.message}")
+                return@launch
+            }
+            if (p.displayName.isNotBlank()) garminName = p.displayName
+            val url = p.imageUrl ?: return@launch
+            auth.fetchImage(url).onSuccess { bytes ->
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bmp != null) garminAvatar = bmp.asImageBitmap()
+            }.onFailure { log("头像下载失败：${it.message}") }
+        }
+    }
+
     private fun askPermissions() {
         val need = requiredPermissions()
         if (need.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
@@ -558,6 +703,7 @@ class MainActivity : ComponentActivity() {
             if (r.isSuccess) {
                 loggedInState.value = true
                 log("✓ 登录状态有效（已自动续期）")
+                loadGarminProfile()
             } else {
                 // 本地有 token 不代表还能用，续期失败要把界面上的「已登录」灭掉
                 loggedInState.value = false
@@ -632,6 +778,7 @@ class MainActivity : ComponentActivity() {
                                         if (r.isSuccess) "✓ Garmin 登录成功"
                                         else "✗ ${r.exceptionOrNull()?.message}"
                                     )
+                                    if (r.isSuccess) loadGarminProfile(force = true)
                                 }
                             },
                             onLog = { log(it) }
@@ -676,6 +823,8 @@ class MainActivity : ComponentActivity() {
                         version = versionName(),
                         loggedIn = loggedIn,
                         regionLabel = regionState.value.label,
+                        avatar = garminAvatar,
+                        garminName = garminName,
                         onBack = { showSettingsHub = false },
                         onOpenProfile = { showSettings = true },
                         onOpenLogin = { showLoginPage = true },
@@ -726,7 +875,15 @@ class MainActivity : ComponentActivity() {
                 } else {
                     MainScreen(
                         version = versionName(),
+                        avatar = garminAvatar,
+                        garminName = garminName,
+                        boundLabel = scale.boundScale()?.let { ScaleCatalog.byId(it.model)?.displayName },
                         autoListen = autoListen,
+                        onWeigh = {
+                            autoListen = true
+                            startListen()
+                            livePhase = "正在找秤…（轻踩一下秤唤醒）"
+                        },
                         onToggleListen = {
                             autoListen = !autoListen
                             if (autoListen) startListen() else stopListen()
@@ -1183,11 +1340,42 @@ class MainActivity : ComponentActivity() {
         return lines
     }
 
+    /** Garmin 头像：拿到图片就圆角显示，没有就用账号名首字母占位 */
+    @Composable
+    private fun GarminAvatar(avatar: ImageBitmap?, name: String, size: androidx.compose.ui.unit.Dp) {
+        Box(
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            if (avatar != null) {
+                Image(
+                    bitmap = avatar,
+                    contentDescription = "Garmin 头像",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    name.trim().take(1).uppercase().ifBlank { "G" },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+    }
+
     @Composable
     private fun MainScreen(
         version: String,
+        avatar: ImageBitmap?,
+        garminName: String,
+        boundLabel: String?,
         autoListen: Boolean,
         onToggleListen: () -> Unit,
+        onWeigh: () -> Unit,
         onOpenSettings: () -> Unit,
     ) {
         val scope = rememberCoroutineScope()
@@ -1197,10 +1385,22 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // ---------------- 顶栏 ----------------
+                // ---------------- 顶栏：头像 + 账号名 + 当前秤 ----------------
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("阿福体脂秤 → Garmin", style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.weight(1f))
+                    GarminAvatar(avatar, garminName, 40.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("阿福体脂秤 → Garmin", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            buildString {
+                                append(if (garminName.isNotBlank()) garminName else "未登录 Garmin")
+                                boundLabel?.let { append(" · ").append(it) }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                            maxLines = 1
+                        )
+                    }
                     OutlinedButton(
                         onClick = onOpenSettings,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
@@ -1234,6 +1434,12 @@ class MainActivity : ComponentActivity() {
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier.weight(1f)
                             )
+                            TextButton(
+                                onClick = onWeigh,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("称重", style = MaterialTheme.typography.labelMedium)
+                            }
                             TextButton(
                                 onClick = onToggleListen,
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
@@ -1442,6 +1648,8 @@ class MainActivity : ComponentActivity() {
         version: String,
         loggedIn: Boolean,
         regionLabel: String,
+        avatar: ImageBitmap?,
+        garminName: String,
         onBack: () -> Unit,
         onOpenProfile: () -> Unit,
         onOpenLogin: () -> Unit,
@@ -1484,12 +1692,24 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(12.dp)) {
-                        Text(
-                            if (loggedIn) "● Garmin 已登录（$regionLabel）" else "○ Garmin 未登录（$regionLabel）",
-                            color = if (loggedIn) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            GarminAvatar(avatar, garminName, 40.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    if (loggedIn) (garminName.ifBlank { "Garmin 已登录" }) else "Garmin 未登录",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (loggedIn) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    if (loggedIn) "● $regionLabel" else "○ $regionLabel",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (loggedIn) MaterialTheme.colorScheme.outline
+                                    else MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         OutlinedButton(onClick = onOpenLogin, modifier = Modifier.fillMaxWidth()) {
                             Icon(Icons.Default.Person, contentDescription = null,
@@ -1677,6 +1897,11 @@ class MainActivity : ComponentActivity() {
         var boundTick by remember { mutableStateOf(0) }
         val bound = remember(boundTick) { scale.boundScale() }
         val scope = rememberCoroutineScope()
+        // 小米秤手动绑定（广播不建连接，靠 MAC + 米家 BLE KEY）
+        var xiaomiMac by remember { mutableStateOf("") }
+        var xiaomiKey by remember { mutableStateOf("") }
+        var xiaomiModel by remember { mutableStateOf("XIAOMI_S400") }
+        var showXiaomiForm by remember { mutableStateOf(false) }
 
         Surface(Modifier.fillMaxSize()) {
             Column(
@@ -1742,10 +1967,9 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 log("绑定扫描 12 秒…")
                                 devices = scale.scanAll(12000) { d -> log("  " + d.display) }
-                                    .filter { it.hasAfuService || it.hasA1Service || scale.detectModel(it.name) == "A1" ||
-                                            it.name.contains("B1", true) || it.name.contains("AFU", true) ||
-                                            it.name.contains("薄荷", true) || it.name.contains("MINT", true) ||
-                                            it.name.contains("SCALE", true) || it.name.contains("BH-TZ", true) }
+                                    .filter {
+                                        ScaleCatalog.match(it.name, it.hasAfuService, it.hasA1Service) != null
+                                    }
                                 log("候选设备 ${devices.size} 个")
                             }
                             scanning = false
@@ -1756,7 +1980,8 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(8.dp))
 
                 devices.forEach { d ->
-                    val model = scale.detectModel(d.name, d.hasA1Service)
+                    val modelInfo = ScaleCatalog.match(d.name, d.hasAfuService, d.hasA1Service)
+                    val modelId = modelInfo?.id ?: scale.detectModel(d.name, d.hasA1Service)
                     Surface(color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()
                             .padding(vertical = 4.dp)) {
@@ -1764,15 +1989,15 @@ class MainActivity : ComponentActivity() {
                             Column(Modifier.weight(1f)) {
                                 Text(d.name.ifBlank { "（无名设备）" },
                                     style = MaterialTheme.typography.bodyMedium)
-                                Text("${d.address}  ·  ${d.rssi}dBm  ·  识别为 $model",
+                                Text("${d.address}  ·  ${d.rssi}dBm  ·  ${modelInfo?.displayName ?: "未知型号"}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.outline)
                             }
                             Spacer(Modifier.width(8.dp))
                             Button(onClick = {
-                                scale.bind(d, model)
+                                scale.bind(d, modelId)
                                 boundTick++
-                                log("✓ 已绑定 ${d.name.ifBlank { d.address.take(8) }}（$model），以后只走 $model 通道")
+                                log("✓ 已绑定 ${d.name.ifBlank { d.address.take(8) }}（${modelInfo?.displayName ?: modelId}）")
                             }) { Text("绑定") }
                         }
                     }
@@ -1781,18 +2006,97 @@ class MainActivity : ComponentActivity() {
                 if (bound != null) {
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "提示：绑定后只连这台秤、只走 ${bound.model} 通道。换秤请到这里重新绑定或解绑。" +
-                                (if (bound.isA1) "\nA1 为实验性协议，体脂仅供参考，请回传日志帮忙校准。" else ""),
+                        "提示：绑定后只连这台秤、只走该型号自己的协议。换秤请到这里重新绑定或解绑。" +
+                                (if (ScaleCatalog.byId(bound.model)?.experimental == true)
+                                    "\n该型号为实验性协议，体脂仅供参考，请回传日志帮忙校准。" else ""),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
                 }
+
+                // ---------------- 小米秤手动绑定（广播秤，扫不到名字，靠 MAC + BLE KEY） ----------------
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = { showXiaomiForm = !showXiaomiForm },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+                    Text(if (showXiaomiForm) "收起「小米秤绑定」" else "绑定小米体脂秤 S400 / S800…",
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+                if (showXiaomiForm) {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("小米秤只发加密广播，扫名字认不出。请在米家 App 配对一次后，用 token 提取工具拿到这台秤的 MAC 和 32 位 BLE KEY，填在下面。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.height(8.dp))
+                            Row {
+                                listOf("XIAOMI_S400" to "S400", "XIAOMI_S800" to "S800").forEach { (id, label) ->
+                                    FilterChip(selected = xiaomiModel == id, onClick = { xiaomiModel = id },
+                                        label = { Text(label) }, modifier = Modifier.padding(end = 8.dp))
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = xiaomiMac, onValueChange = { xiaomiMac = it },
+                                label = { Text("MAC 地址，如 11:22:33:44:55:66") },
+                                singleLine = true, modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = xiaomiKey, onValueChange = { xiaomiKey = it },
+                                label = { Text("32 位 BLE KEY（米家云提取）") },
+                                singleLine = true, modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(8.dp))
+                            Button(onClick = {
+                                val mac = xiaomiMac.trim()
+                                val key = xiaomiKey.trim().replace(" ", "")
+                                when {
+                                    !mac.matches(Regex("(?i)^([0-9a-f]{2}:){5}[0-9a-f]{2}$")) ->
+                                        log("✗ MAC 格式不对，应形如 11:22:33:44:55:66")
+                                    key.length != 32 || !key.matches(Regex("(?i)^[0-9a-f]{32}$")) ->
+                                        log("✗ BLE KEY 应为 32 位十六进制字符")
+                                    else -> {
+                                        val label = ScaleCatalog.byId(xiaomiModel)?.displayName ?: "小米体脂秤"
+                                        scale.bind(ScaleReader.Device(mac.uppercase(), label), xiaomiModel)
+                                        prefs.edit().putString(
+                                            com.example.b1garmin.scale.xiaomi.XiaomiProtocol.PREF_BINDKEY_PREFIX + mac.uppercase(),
+                                            key.lowercase()).apply()
+                                        boundTick++
+                                        log("✓ 已绑定 $label（$mac）。站上秤即可，需光脚踩满电极才有阻抗")
+                                    }
+                                }
+                            }, modifier = Modifier.fillMaxWidth()) { Text("绑定小米秤") }
+                            Text("S400 赤足能测双频阻抗；S800 广播只能读体重，体脂按 BMI 估算，均为实验性。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
+
+                // ---------------- 支持的秤清单（新增品牌在这里自动出现） ----------------
+                Spacer(Modifier.height(16.dp))
+                Text("支持的秤", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        ScaleCatalog.all.forEachIndexed { i, m ->
+                            if (i > 0) Spacer(Modifier.height(8.dp))
+                            Text(m.displayName, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "${m.brand} · ${if (m.bodyComp == BodyCompStandard.HUAWEI) "华为口径" else if (m.bodyComp == BodyCompStandard.XIAOMI) "小米口径" else "阿福口径"}" +
+                                        (if (m.experimental) " · 实验性" else "") +
+                                        (if (m.singleShot) " · 一次称完即结束" else ""),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Text(m.note, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
             }
         }
     }
-
-    // ====================================================================
-    // 体脂率校准页（低频功能，从首页拆出）
     // ====================================================================
     @Composable
     private fun CalibScreen(
@@ -2290,6 +2594,7 @@ class MainActivity : ComponentActivity() {
                             if (r.isSuccess) {
                                 loggedInState.value = true
                                 log("✓ Garmin 登录成功")
+                                loadGarminProfile(force = true)
                                 onBack()   // 登录成功回首页
                             } else {
                                 log("✗ ${r.exceptionOrNull()?.message}")
@@ -2327,6 +2632,8 @@ class MainActivity : ComponentActivity() {
                         onClick = {
                             auth.clear()
                             loggedInState.value = false
+                            garminAvatar = null
+                            garminName = ""
                             summary = ""
                             email = ""; password = ""
                             log("已退出 Garmin 登录")

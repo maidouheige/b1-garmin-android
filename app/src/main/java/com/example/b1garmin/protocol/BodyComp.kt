@@ -122,6 +122,80 @@ object BodyComp {
     }
 
     /**
+     * 华为/荣耀体脂秤口径的推算。
+     *
+     * 2026-11-21 用荣耀体脂秤 2 实测、与华为运动健康 App 的体成分页逐项对齐：
+     * 87.4kg / 179cm / 32 岁 / 男 / 阻抗 633.3Ω → App 显示 体脂 22.1%、去脂 68.1kg、
+     * 水分 56.0%、蛋白质 17.9%、骨盐 3.47kg、骨骼肌 36.8kg、BMR 1943、内脏脂肪 11.0。
+     *
+     * - 去脂体重用 Segal 男 3a / 女 3c 方程（华为不做 20% 分档，实测 3a 得 68.16kg，
+     *   与 App 的 68.1 一致；分档切到 3b 会跳到 59kg，明显不对）
+     * - 其余四项按实测反推的比例从去脂体重拆出来，总和闭合
+     * - 不加阿福那套校准偏移（那是另一台秤的电极几何差异）
+     */
+    fun estimateHuawei(
+        weightKg: Double, heightCm: Double, age: Int, sex: String,
+        resistanceOhm: Double?,
+        scaleFatPercent: Double? = null,
+    ): Estimate? {
+        if (weightKg <= 0 || heightCm <= 0) return null
+        val male = isMale(sex)
+        val h2 = heightCm * heightCm
+        val ffm: Double
+        val model: String
+        if (scaleFatPercent != null && scaleFatPercent in 1.0..70.0) {
+            // 华为 App 直接用秤端算好的体脂率（偏移 2），不重算
+            ffm = weightKg * (1 - scaleFatPercent / 100.0)
+            model = "huawei_scale_fat"
+        } else if (resistanceOhm != null && resistanceOhm in 100.0..1500.0) {
+            ffm = if (male) {
+                9.33285 + 0.00066360 * h2 - 0.02117 * resistanceOhm + 0.62854 * weightKg - 0.12380 * age
+            } else {
+                10.43485 + 0.00064602 * h2 - 0.01397 * resistanceOhm + 0.42087 * weightKg
+            }
+            model = if (male) "huawei_segal_male" else "huawei_segal_female"
+        } else {
+            val bmi = weightKg / Math.pow(heightCm / 100.0, 2.0)
+            val bf = 1.20 * bmi + 0.23 * age - 10.8 * (if (male) 1 else 0) - 5.4
+            ffm = weightKg * (1 - bf / 100.0)
+            model = "huawei_deurenberg_bmi_fallback"
+        }
+        val lean = clamp(ffm, weightKg * 0.35, weightKg * 0.97)
+        val bf = 100.0 * (weightKg - lean) / weightKg
+        val r1 = { x: Double -> (x * 10).roundToInt() / 10.0 }
+        val water = lean * HW_WATER_PER_FFM
+        val bone = lean * HW_BONE_PER_FFM
+        val muscle = lean * HW_SKELETAL_MUSCLE_PER_FFM
+
+        val physique = if (male) {
+            when { bf < 10 -> 9; bf < 15 -> 8; bf < 20 -> 7; bf < 25 -> 6; bf < 30 -> 5; bf < 35 -> 4; bf < 40 -> 3; else -> 2 }
+        } else {
+            when { bf < 16 -> 9; bf < 20 -> 8; bf < 25 -> 7; bf < 30 -> 6; bf < 35 -> 5; bf < 40 -> 4; else -> 3 }
+        }
+
+        return Estimate(
+            weightKg = r1(weightKg),
+            bmi = r1(weightKg / Math.pow(heightCm / 100.0, 2.0)),
+            bodyFatPercent = r1(bf),
+            percentHydration = r1(water / weightKg * 100.0),
+            boneMassKg = r1(bone),
+            muscleMassKg = r1(muscle),   // 骨骼肌，与 FIT muscle_mass 口径一致
+            basalMet = (HW_KCAL_PER_KG_FFM * lean).toInt(),
+            physiqueRating = physique,
+            metabolicAge = age,
+            visceralFatRating = (0.25 * bf + 5.5).roundToInt().coerceIn(1, 20),
+            model = model,
+            resistanceOhm = resistanceOhm,
+        )
+    }
+
+    /** 华为体成分比例（2026-11-21 荣耀体脂秤 2 实测反推，四项相加闭合） */
+    private const val HW_WATER_PER_FFM = 0.7186
+    private const val HW_BONE_PER_FFM = 0.0512
+    private const val HW_SKELETAL_MUSCLE_PER_FFM = 0.538
+    private const val HW_KCAL_PER_KG_FFM = 28.53
+
+    /**
      * @param offsets 校准偏移，按模型自动选取（见 [Offsets]）
      */
     fun estimate(weightKg: Double, heightCm: Double, age: Int, sex: String,

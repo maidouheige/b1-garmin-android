@@ -492,6 +492,76 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
         }
 
     // ====================================================================
+    // 6.6 账号资料：显示名 + 头像
+    // ====================================================================
+
+    data class SocialProfile(
+        val displayName: String,
+        val fullName: String,
+        /** 头像图片地址（相对路径已补全域名）；没有头像为 null */
+        val imageUrl: String?,
+    )
+
+    /** 拉 Garmin 账号资料（socialProfile），用于首页显示登录账号的头像和名字。 */
+    suspend fun fetchSocialProfile(): Result<SocialProfile> = withContext(Dispatchers.IO) {
+        val token = validToken().getOrElse { return@withContext Result.failure(it) }
+        try {
+            val req = Request.Builder()
+                .url("$connectApi/userprofile-service/socialProfile")
+                .headers(nativeHeaders(mapOf(
+                    "Authorization" to "Bearer ${token.accessToken}",
+                    "Accept" to "application/json",
+                )))
+                .get().build()
+            client.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(Exception("读取账号资料失败 HTTP ${resp.code}"))
+                }
+                val j = JSONObject(text)
+                // 接口返回的是 large/medium/small 三个尺寸，没有单个 profileImageUrl；
+                // displayName 常常是 GUID，优先用 fullName 当显示名
+                val name = j.optString("fullName").ifBlank { j.optString("displayName") }
+                val avatarRaw = listOf(
+                    "profileImageUrlLarge", "profileImageUrlMedium", "profileImageUrlSmall"
+                ).map { j.optString(it) }
+                    .firstOrNull { it.isNotBlank() && !it.equals("null", true) }
+                val avatar = avatarRaw?.let { if (it.startsWith("http")) it else connectApi + it }
+                log("账号资料：${name.ifBlank { "（未命名）" }}${if (avatar != null) " · 已获取头像" else " · 未设置头像"}")
+                Result.success(
+                    SocialProfile(
+                        displayName = name,
+                        fullName = j.optString("fullName"),
+                        imageUrl = avatar,
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "socialProfile error", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 下载头像图片（CDN 地址通常不需要鉴权）。 */
+    suspend fun fetchImage(url: String): Result<ByteArray> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", NATIVE_UA)
+                .get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Result.failure(Exception("下载头像失败 HTTP ${resp.code}"))
+                } else {
+                    Result.success(resp.body?.bytes() ?: ByteArray(0))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ====================================================================
     // 工具
     // ====================================================================
 

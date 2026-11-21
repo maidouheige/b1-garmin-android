@@ -18,7 +18,7 @@
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:label="B1 → Garmin"
+        android:label="体脂秤 → Garmin"
         android:supportsRtl="true"
         android:theme="@style/Theme.B1Garmin"
         android:usesCleartextTraffic="false">
@@ -26,7 +26,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="B1 → Garmin"
+            android:label="体脂秤 → Garmin"
             android:theme="@style/Theme.B1Garmin">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

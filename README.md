@@ -4,13 +4,13 @@
 
 站上秤 → 光脚站稳十几秒 → 体重、体脂、肌肉、水分等自动进 Garmin，无需电脑、无需 Root。
 
-> 当前版本 **v0.19.3**。这是一个个人自用的小工具，源码开放供参考。
+> 当前版本 **v0.20.0**。这是一个个人自用的小工具，源码开放供参考。
 
 ## 📥 下载
 
 | 渠道 | 地址 |
 |---|---|
-| **APK 直链**（手机直接点，推荐） | [B1-Garmin-Sync-v0.19.3.apk](https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.19.3.apk) |
+| **APK 直链**（手机直接点，推荐） | [B1-Garmin-Sync-v0.20.0.apk](https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.0.apk) |
 | Gitee Release（更新说明） | https://gitee.com/maidouheige/b1-garmin-android/releases |
 | GitHub Release | https://github.com/maidouheige/b1-garmin-android/releases |
 
@@ -27,8 +27,22 @@
 
 ---
 
+## 支持的秤
+
+| 型号 | 协议 | 状态 |
+|---|---|---|
+| 蚂蚁阿福 × 薄荷 B1（AFU-BH-TZ-B1） | 阿福私协议 FC50 | 已支持（稳定） |
+| 阿福 A1（FG2508WB） | 阿福私协议 FFB0 | 实验性，体脂仅供参考 |
+| 荣耀体脂秤 2（LUP-B19） | 华为 WSP 私协议 | 实验性，一次称完即结束 |
+| 小米体脂秤 S400（MJTZC01YM） | 加密 MiBeacon 广播 | 实验性，需在绑定页填米家 BLE KEY |
+| 小米体脂秤 S800（MS116） | 加密 MiBeacon 广播 | 实验性，广播仅能读体重，体脂按 BMI 估算 |
+
+多品牌通过 `scale/ScaleCatalog.kt` 注册表接入：每个型号声明匹配规则、协议实现和体成分口径，绑定哪台走哪套逻辑，互不影响。B1 / A1 是 GATT 连接读数；荣耀走华为私协议；小米走被动加密广播（不建连接、需 32 位 BLE bindkey，从米家云提取）。
+
 ## 功能特性
 
+- **多品牌秤**：按型号注册协议，B1 / A1 / 荣耀 / 小米各自独立实现，绑定后只走对应通道
+- **Garmin 账号头像**：首页与设置页显示登录账号的头像和显示名
 - **实时称重同步**：站上秤即可读写，体重锁定后提示继续光脚站稳测阻抗，拿到体成分后自动上传
 - **读取阻抗**：0x52 阻抗帧 + 0x54 体成分记录帧解析，拿不到阻抗时用 BMI 兜底
 - **阿福体成分模型**：水分 = 0.6966×FFM、骨量 = 0.0522×FFM、肌肉 = FFM−骨量、BMR = 30×FFM、内脏脂肪 = BF/3
