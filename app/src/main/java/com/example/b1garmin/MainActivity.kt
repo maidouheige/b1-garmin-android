@@ -2248,7 +2248,7 @@ class MainActivity : ComponentActivity() {
                                         miAuthStatus = "请用米家 App 扫描二维码并确认登录（倒计时中…）"
                                         val result = XiaomiCloudAuth.waitForScan(t,
                                             onTick = { waitedSec ->
-                                                miAuthStatus = "等待扫码中… ${waitedSec}秒/${ticket.getOrThrow().timeoutSec}秒"
+                                                miAuthStatus = "等待扫码中… ${waitedSec}秒/${t.timeoutSec}秒"
                                             },
                                             shouldStop = { !showMiAuth })
                                         if (result.isFailure) {

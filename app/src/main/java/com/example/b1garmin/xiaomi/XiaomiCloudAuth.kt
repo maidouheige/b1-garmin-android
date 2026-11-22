@@ -211,17 +211,23 @@ object XiaomiCloudAuth {
                     lastResp = resp
                     if (resp.isSuccessful) {
                         val text = resp.body?.string().orEmpty()
+                        Log.d(TAG, "长轮询响应: ${text.take(200)}")
                         val cleaned = stripJsonp(stripPrefix(text))
+                        Log.d(TAG, "清理后: ${cleaned.take(200)}")
                         val j = JSONObject(cleaned)
                         // 扫码成功后：userId / ssecurity / location 都在 JSON 里
                         val ssecurity = j.getString("ssecurity")
                         val location = j.getString("location")
                         val userId = j.optString("userId", null)
+                        Log.d(TAG, "扫码成功! userId=$userId, location=$location")
                         val token = fetchServiceToken(location)
                         return@withContext Result.success(Session(userId, ssecurity, token))
+                    } else {
+                        Log.w(TAG, "长轮询返回非成功状态: ${resp.code}")
                     }
                 } catch (e: Exception) {
                     // 长轮询未扫码时会 4xx/超时，忽略继续轮询
+                    Log.d(TAG, "长轮询异常（正常）: ${e.message}")
                     if (shouldStop()) break
                 }
                 kotlinx.coroutines.delay(1000)
