@@ -211,7 +211,8 @@ object XiaomiCloudAuth {
                     lastResp = resp
                     if (resp.isSuccessful) {
                         val text = resp.body?.string().orEmpty()
-                        val j = JSONObject(stripPrefix(text))
+                        val cleaned = stripJsonp(stripPrefix(text))
+                        val j = JSONObject(cleaned)
                         // 扫码成功后：userId / ssecurity / location 都在 JSON 里
                         val ssecurity = j.getString("ssecurity")
                         val location = j.getString("location")
@@ -457,6 +458,14 @@ object XiaomiCloudAuth {
     private fun sha256(b: ByteArray) = MessageDigest.getInstance("SHA-256").digest(b)
     private fun sha1(b: ByteArray) = MessageDigest.getInstance("SHA-1").digest(b)
     private fun stripPrefix(s: String) = s.removePrefix("&&&START&&&").trim()
+
+    /** 去掉 JSONP 包装：callbackName({...}) → {...} */
+    private fun stripJsonp(s: String): String {
+        val trimmed = s.trim()
+        // 匹配 callbackName(...) 格式
+        val jsonpPattern = Regex("^\\w+\\((.+)\\)$", RegexOption.DOT_MATCHES_ALL)
+        return jsonpPattern.find(trimmed)?.groupValues?.get(1)?.trim() ?: trimmed
+    }
     private fun Map<String, String>.toHeaders() = okhttp3.Headers.Builder().apply {
         forEach { (k, v) -> add(k, v) }
     }.build()

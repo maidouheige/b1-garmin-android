@@ -1,7 +1,7 @@
 {
-  "versionCode": 50,
-  "versionName": "0.21.1",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.1.apk",
-  "notes": "修复米家扫码登录问题：添加等待倒计时提示、保存二维码图片功能",
-  "size": 9878792
+  "versionCode": 51,
+  "versionName": "0.21.2",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.2.apk",
+  "notes": "修复米家扫码登录：处理 JSONP 回调格式，扫码成功后能正确接收响应",
+  "size": 9878788
 }
