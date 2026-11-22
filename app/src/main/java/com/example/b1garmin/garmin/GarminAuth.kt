@@ -519,11 +519,12 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
                     return@withContext Result.failure(Exception("读取账号资料失败 HTTP ${resp.code}"))
                 }
                 val j = JSONObject(text)
-                // 佳明 socialProfile 字段说明（别再选错）：
-                //  - displayName 常是给接口用的 GUID/标识，未必是可读昵称（很多账号是 GUID 或空）
-                //  - fullName 是账号真实姓名 —— 用户明确不要显示，绝不用
-                //  - userName 是佳明用户名，有时是邮箱，可用 @ 前部分当昵称
-                // 目标：显示一个「可读的昵称」，绝不暴露真实姓名；都读不到才用中性兜底。
+                // 佳明 socialProfile 字段说明：
+                //  - fullName 是账号真实姓名 —— 用户明确要显示这个，优先用
+                //  - displayName 常是给接口用的 GUID/标识，未必可读
+                //  - userName 是佳明用户名，有时是邮箱
+                // 目标：优先显示真实姓名 fullName；读不到再退回可读的 displayName/userName；都没有才中性兜底。
+                val rawFull = j.optString("fullName").trim()
                 val rawDisplay = j.optString("displayName").trim()
                 val rawUserName = j.optString("userName").trim()
 
@@ -539,7 +540,8 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
                     val nick = if (s.contains("@")) s.substringBefore("@") else s  // 邮箱取 @ 前
                     return nick.trim().takeIf { it.isNotBlank() }
                 }
-                val name = readableNick(rawDisplay)
+                val name = rawFull.takeIf { it.isNotBlank() }
+                    ?: readableNick(rawDisplay)
                     ?: readableNick(rawUserName)
                     ?: "Garmin 用户"
                 val avatarRaw = listOf(
@@ -547,7 +549,7 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
                 ).map { j.optString(it) }
                     .firstOrNull { it.isNotBlank() && !it.equals("null", true) }
                 val avatar = avatarRaw?.let { if (it.startsWith("http")) it else connectApi + it }
-                log("账号资料：displayName=[${rawDisplay.ifBlank { "空" }}] userName=[${rawUserName.ifBlank { "空" }}] → 界面昵称=[$name]" +
+                log("账号资料：fullName=[${if (rawFull.isBlank()) "空" else "有值"}] displayName=[${rawDisplay.ifBlank { "空" }}] userName=[${rawUserName.ifBlank { "空" }}] → 界面显示=[$name]" +
                     "${if (avatar != null) " · 已获取头像" else " · 未设置头像"}")
                 Result.success(
                     SocialProfile(

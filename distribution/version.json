@@ -1,7 +1,7 @@
 {
-  "versionCode": 46,
-  "versionName": "0.20.3",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.3.apk",
-  "notes": "修复首页昵称显示为「Garmin用户」:佳明displayName对很多账号是GUID或空,改为多字段尝试displayName再userName(邮箱取@前),都读不到才兜底;仍绝不显示真实姓名;日志增加原始字段输出方便定位;仅显示逻辑改动",
+  "versionCode": 47,
+  "versionName": "0.20.4",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.4.apk",
+  "notes": "首页账号名改回显示佳明账户资料里的姓名,用户可在Garmin个人资料中自行设置显示;仅在姓名为空时才退回昵称或默认兜底;头像不变;仅显示逻辑改动,称重与上传主链路不变",
   "size": 9837733
 }
