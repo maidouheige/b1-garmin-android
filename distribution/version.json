@@ -1,9 +1,9 @@
 {
-  "versionCode": 55,
-  "versionName": "0.22.0",
-  "url": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.22.0/B1-Garmin-Sync-v0.22.0.apk",
-  "notes": "修复 APK 下载链接：APK>10MB 时自动使用 GitHub Release 链接",
-  "size": 10525058,
-  "giteeUrl": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.22.0.apk",
-  "githubUrl": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.22.0/B1-Garmin-Sync-v0.22.0.apk"
+  "versionCode": 56,
+  "versionName": "0.23.0",
+  "url": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.23.0/B1-Garmin-Sync-v0.23.0.apk",
+  "notes": "深色模式正式生效（跟随系统/浅色/深色三档）；新增记录页（体重体脂趋势+本地存储）；称重自动落地本地记录；失败记录每6小时后台自动补传",
+  "size": 10533254,
+  "giteeUrl": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.23.0.apk",
+  "githubUrl": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.23.0/B1-Garmin-Sync-v0.23.0.apk"
 }

@@ -60,6 +60,11 @@ import com.example.b1garmin.ui.Profile
 import com.example.b1garmin.ui.ProfileStore
 import com.example.b1garmin.ui.ScaleCalib
 import com.example.b1garmin.ui.SettingsScreen
+import com.example.b1garmin.ui.records.RecordsScreen
+import com.example.b1garmin.ui.theme.GarminTheme
+import com.example.b1garmin.ui.theme.GTabBar
+import com.example.b1garmin.ui.theme.ThemeStore
+import com.example.b1garmin.sync.RetryWorker
 import com.example.b1garmin.xiaomi.XiaomiCloudAuth
 import com.example.b1garmin.ui.VerifyEntry
 import com.example.b1garmin.ui.VerifyStore
@@ -109,6 +114,12 @@ class MainActivity : ComponentActivity() {
      * 所以初值给默认的，真正去读放在 onCreate 里。
      */
     private val profileState = mutableStateOf(Profile())
+
+    /**
+     * 外观偏好（跟随系统/浅色/深色）。放 Activity 级，设置页切换时改这里，
+     * GarminTheme 才能重组生效。初值给 SYSTEM，onCreate 里再读持久化值。
+     */
+    private val themeModeState = mutableStateOf(ThemeStore.SYSTEM)
 
     /**
      * 状态更新必须在主线程做。
@@ -279,15 +290,53 @@ class MainActivity : ComponentActivity() {
                     rec.resistanceOhm, savedOffsets(addr))
             }
 
+        // 本地记录仓库（旁路写入，任何异常都不能影响称重/Garmin 上传）
+        val recordsRepo = try {
+            com.example.b1garmin.data.MeasurementRepository.get(this)
+        } catch (e: Exception) {
+            Log.w("B1Garmin", "本地记录库初始化失败，本次不落地：${e.message}")
+            null
+        }
+        val localModel = ScaleCatalog.byId(prefs.getString("cur_scale_model", "") ?: "")
+
+        // 旁路写入本地记录：任何异常都吞掉，绝不影响称重主流程和 Garmin 上传
+        suspend fun recordLocal(
+            rec: ScaleMeasurement,
+            est: BodyComp.Estimate?,
+            status: String,
+            skipReason: String? = null,
+            error: String? = null,
+        ) {
+            val repo = recordsRepo ?: return
+            try {
+                repo.record(
+                    rec = rec,
+                    est = est,
+                    heightCm = h.toInt(),
+                    age = a,
+                    sex = profileState.value.sexText,
+                    model = localModel,
+                    scaleMac = addr,
+                    status = status,
+                    skipReason = skipReason,
+                    error = error,
+                )
+            } catch (e: Exception) {
+                Log.w("B1Garmin", "本地记录写入失败（不影响上传）：${e.message}")
+            }
+        }
+
         recs.forEach { rec ->
             val whenStr = java.text.SimpleDateFormat("MM-dd HH:mm")
                 .format(java.util.Date(rec.timestampSec * 1000))
             val key = "${rec.timestampSec}-${Math.round(rec.weightKg * 1000)}"
 
             var uploaded = false
+            var localSkipReason: String? = null
             if (ledger.getBoolean(key, false)) {
                 log("$whenStr ${rec.weightKg}kg（已同步过，跳过上传）")
                 skipCount++
+                localSkipReason = "已同步过"
             } else if (!rec.fromHistory &&
                 prefs.getFloat("last_live_kg", 0f).let { lastKg ->
                     lastKg > 0f &&
@@ -298,9 +347,13 @@ class MainActivity : ComponentActivity() {
             ) {
                 log("$whenStr ${rec.weightKg}kg（5 分钟内刚同步过同一体重，跳过上传）")
                 skipCount++
+                localSkipReason = "短时间内重复"
             } else {
                 uploaded = true
             }
+
+            // 体成分估算（跳转/失败的记录也要算出来存着，记录页才看得见）
+            val est = estimateOf(rec)
 
             // 无论是否真的上传，都把这次称重记进验证台账（阿福的校准台账，荣耀秤不参与）
             if (!honor) {
@@ -319,11 +372,16 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-            if (!uploaded) return@forEach
 
-            val est = estimateOf(rec)
+            if (!uploaded) {
+                recordLocal(rec, est, com.example.b1garmin.data.UploadStatus.SKIPPED, localSkipReason)
+                return@forEach
+            }
+
             if (est == null) {
                 log("$whenStr ${rec.weightKg}kg ✗ 体成分推算失败")
+                recordLocal(rec, null, com.example.b1garmin.data.UploadStatus.FAILED,
+                    error = "体成分推算失败")
                 return@forEach
             }
             // 先打一行体成分明细：没登录也可以直接和手机厂商 App 对数
@@ -350,8 +408,11 @@ class MainActivity : ComponentActivity() {
                 log("$whenStr ${rec.weightKg}kg ✓ 已上传（体脂 %.1f%% · $muscleLabel %.1fkg · 水分 %.1f%%%s）"
                     .format(est.bodyFatPercent, est.muscleMassKg, est.percentHydration,
                         rec.heartRateBpm?.let { " · 心率 ${it}bpm" } ?: ""))
+                recordLocal(rec, est, com.example.b1garmin.data.UploadStatus.UPLOADED)
             } else {
-                log("$whenStr ${rec.weightKg}kg ✗ ${up.exceptionOrNull()?.message}")
+                val err = up.exceptionOrNull()?.message ?: "上传失败"
+                log("$whenStr ${rec.weightKg}kg ✗ $err")
+                recordLocal(rec, est, com.example.b1garmin.data.UploadStatus.FAILED, error = err)
             }
             delay(300)
         }
@@ -668,6 +729,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 初始化主题：读偏好（不能在非 Composable 中调用 isSystemInDarkTheme）
+        themeModeState.value = try { ThemeStore.load(this) } catch (e: Exception) { ThemeStore.SYSTEM }
+        com.example.b1garmin.ui.theme.GColor.setDark(themeModeState.value == ThemeStore.DARK)
+
         val savedRegion = try {
             prefs.getString("garmin_region", GarminAuth.Region.GLOBAL.name)?.let {
                 GarminAuth.Region.valueOf(it)
@@ -698,6 +763,9 @@ class MainActivity : ComponentActivity() {
 
         askPermissions()
 
+        // 启动后台补传：每 6 小时有网时自动重试上传失败的记录
+        RetryWorker.schedule(this)
+
         // 打开 App 就自动进入称重待机：连上秤、等人站上去。
         // 权限是异步授予的，autoWeighLoop 内部会等蓝牙/权限就绪，不会卡死。
         startListen()
@@ -727,20 +795,26 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            val isDark = when (themeModeState.value) {
+                ThemeStore.DARK -> true
+                ThemeStore.LIGHT -> false
+                else -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
+            GarminTheme(dark = isDark) {
                 val scope = rememberCoroutineScope()
                 var showLogin by remember { mutableStateOf(false) }       // 网页登录 WebView
                 var showLoginPage by remember { mutableStateOf(false) }   // 登录页（账号/密码输入）
                 var showSettings by remember { mutableStateOf(false) }    // 资料编辑页
-                var showSettingsHub by remember { mutableStateOf(false) } // 设置中心（账户/蓝牙/资料/校准/关于）
+                var showSettingsHub by remember { mutableStateOf(false) } // 设置中心（账户/蓝牙/资料/校准/外观/关于）
                 var showCalib by remember { mutableStateOf(false) }
                 var showBind by remember { mutableStateOf(false) }      // 绑定秤页（识别 A1/B1 并锁定通道）
+                var showRecords by remember { mutableStateOf(false) }   // 记录页
                 val loggedIn by loggedInState
 
                 // 系统侧滑/返回键：有子页面就逐层返回，只有在首页才退出 App。
                 // 依赖 BackHandler 的 enabled 条件：任一子页打开时接管返回事件。
                 BackHandler(enabled = showLogin || showLoginPage || showSettings ||
-                        showSettingsHub || showCalib || showBind) {
+                        showSettingsHub || showCalib || showBind || showRecords) {
                     when {
                         showLogin -> showLogin = false
                         showLoginPage -> showLoginPage = false
@@ -753,6 +827,7 @@ class MainActivity : ComponentActivity() {
                             showBind = false
                             if (resumeListenAfterBind) startListen()
                         }
+                        showRecords -> showRecords = false
                         showSettingsHub -> showSettingsHub = false
                     }
                 }
@@ -882,23 +957,43 @@ class MainActivity : ComponentActivity() {
                         onCheckUpdate = { scope.launch { checkUpdate(silent = false) } },
                     )
                 } else {
-                    MainScreen(
-                        version = versionName(),
-                        avatar = garminAvatar,
-                        garminName = garminName,
-                        boundLabel = scale.boundScale()?.let { ScaleCatalog.byId(it.model)?.displayName },
-                        autoListen = autoListen,
-                        onWeigh = {
-                            autoListen = true
-                            startListen()
-                            livePhase = "正在找秤…（轻踩一下秤唤醒）"
-                        },
-                        onToggleListen = {
-                            autoListen = !autoListen
-                            if (autoListen) startListen() else stopListen()
-                        },
-                        onOpenSettings = { showSettingsHub = true },
-                    )
+                    if (showRecords) {
+                        RecordsScreen(onRetry = { entity ->
+                            if (auth.load() == null) {
+                                kotlin.Result.failure(Exception("请先登录 Garmin"))
+                            } else {
+                                com.example.b1garmin.data.RecordRetry.retry(
+                                    entity, auth,
+                                    com.example.b1garmin.data.MeasurementRepository.get(this@MainActivity),
+                                    ledger,
+                                ) { log(it) }
+                            }
+                        })
+                    } else {
+                        MainScreen(
+                            version = versionName(),
+                            avatar = garminAvatar,
+                            garminName = garminName,
+                            boundLabel = scale.boundScale()?.let { ScaleCatalog.byId(it.model)?.displayName },
+                            autoListen = autoListen,
+                            onWeigh = {
+                                autoListen = true
+                                startListen()
+                                livePhase = "正在找秤…（轻踩一下秤唤醒）"
+                            },
+                            onToggleListen = {
+                                autoListen = !autoListen
+                                if (autoListen) startListen() else stopListen()
+                            },
+                            onOpenSettings = { showSettingsHub = true },
+                            onOpenBind = {
+                                resumeListenAfterBind = autoListen
+                                stopListen()
+                                showBind = true
+                            },
+                            onOpenRecords = { showRecords = true },
+                        )
+                    }
                 }
 
                 // 更新弹窗放导航外层：在首页或设置页点「检查更新」都能看到
@@ -1386,6 +1481,8 @@ class MainActivity : ComponentActivity() {
         onToggleListen: () -> Unit,
         onWeigh: () -> Unit,
         onOpenSettings: () -> Unit,
+        onOpenBind: () -> Unit,
+        onOpenRecords: () -> Unit,
     ) {
         val scope = rememberCoroutineScope()
         Surface(Modifier.fillMaxSize()) {
@@ -1644,6 +1741,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                // ---------------- 底部 Tab 栏（当前显示的就是首页，固定高亮首页）----------------
+                // 设备/记录/我的作为快捷入口打开对应全屏页，返回后仍回到这个首页。
+                GTabBar(selected = 0, onSelect = {
+                    when (it) {
+                        0 -> { /* 已在首页 */ }
+                        1 -> onOpenBind()      // 设备 → 绑定页
+                        2 -> onOpenRecords()   // 记录 → 本地记录页
+                        3 -> onOpenSettings()  // 我的 → 设置中心
+                    }
+                })
             }
 
         }
@@ -1865,6 +1972,52 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.width(6.dp))
                             Text("校准 / 验证 / 诊断工具")
                         }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                // ---------------- 外观 ----------------
+                Text("外观", style = MaterialTheme.typography.titleMedium)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        val isSysDark = androidx.compose.foundation.isSystemInDarkTheme()
+                        val themeMode = themeModeState.value
+                        val isDark = when {
+                            themeMode == ThemeStore.DARK -> true
+                            themeMode == ThemeStore.LIGHT -> false
+                            else -> isSysDark
+                        }
+                        Text(
+                            "当前主题：${if (isDark) "深色" else "浅色"}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            listOf(ThemeStore.SYSTEM to "跟随系统", ThemeStore.LIGHT to "浅色", ThemeStore.DARK to "深色")
+                                .forEach { (mode, label) ->
+                                    val selected = themeMode == mode
+                                    Button(
+                                        onClick = {
+                                            ThemeStore.save(this@MainActivity, mode)
+                                            themeModeState.value = mode   // 触发 GarminTheme 重组，全 App 立即换肤
+                                            log("✓ 主题已切换为「$label」")
+                                        },
+                                        enabled = !selected,
+                                        modifier = Modifier.weight(1f).padding(end = if (mode == ThemeStore.DARK) 0.dp else 4.dp)
+                                    ) {
+                                        Text(label, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                        }
+                        Text(
+                            "切换后立即生效，下次启动也会记住你的选择。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
                     }
                 }
                 Spacer(Modifier.height(16.dp))
