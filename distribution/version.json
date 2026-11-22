@@ -1,7 +1,7 @@
 {
-  "versionCode": 43,
-  "versionName": "0.20.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.0.apk",
-  "notes": "新增荣耀体脂秤2、小米S400/S800支持（实验性，欢迎真机反馈）；新增Garmin头像与昵称显示；体成分新增华为口径；B1/A1称重与Garmin同步主链路保持不变；小米秤需在绑定页填米家BLE KEY，S800仅读体重、体脂按BMI估算",
-  "size": 9833637
+  "versionCode": 44,
+  "versionName": "0.20.1",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.1.apk",
+  "notes": "小米秤绑定页内置图文教程:一步讲清如何在米家配对、用开源工具提取MAC与BLE KEY、云端设备名不叫S400的坑、称重前必须杀掉米家后台、解绑会换KEY;教程离线可看并附工具说明页链接;仅UI改动,B1/A1主链路与上传不变",
+  "size": 9837733
 }

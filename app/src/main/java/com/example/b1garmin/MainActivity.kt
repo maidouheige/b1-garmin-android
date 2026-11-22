@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -34,6 +35,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -1902,6 +1904,7 @@ class MainActivity : ComponentActivity() {
         var xiaomiKey by remember { mutableStateOf("") }
         var xiaomiModel by remember { mutableStateOf("XIAOMI_S400") }
         var showXiaomiForm by remember { mutableStateOf(false) }
+        var showXiaomiGuide by remember { mutableStateOf(false) }
 
         Surface(Modifier.fillMaxSize()) {
             Column(
@@ -2025,10 +2028,53 @@ class MainActivity : ComponentActivity() {
                     Surface(color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("小米秤只发加密广播，扫名字认不出。请在米家 App 配对一次后，用 token 提取工具拿到这台秤的 MAC 和 32 位 BLE KEY，填在下面。",
+                            val ctx = LocalContext.current
+                            Text("小米秤只发加密广播，扫名字认不出。需要这台秤的 MAC 和 32 位 BLE KEY，填在下面即可。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.outline)
-                            Spacer(Modifier.height(8.dp))
+                            Spacer(Modifier.height(6.dp))
+                            TextButton(onClick = { showXiaomiGuide = !showXiaomiGuide },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
+                                Text(if (showXiaomiGuide) "收起「怎么拿到 KEY」" else "怎么拿到 MAC 和 BLE KEY？（只需弄一次）",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                            if (showXiaomiGuide) {
+                                Surface(color = MaterialTheme.colorScheme.surface,
+                                    shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        val guideSteps = listOf(
+                                            "① 先在米家 App 里把这台秤配对好，并光脚完整称一次，让云端为你的账号生成 KEY。",
+                                            "② 电脑上运行开源工具「Xiaomi-cloud-tokens-extractor」：Windows 下载 token_extractor.exe 双击；Linux 一行命令。用米家账号密码或扫码登录，服务器区域选 cn（国内账号）。",
+                                            "③ 在设备列表里找这台秤。注意：S400 在云端常不叫「S400」，而是 yunmai.scales.ms103 / ms104 / ms107 或 xiaomi.scales.ms110；S800 找 MS116。",
+                                            "④ 复制它的 MAC（如 11:22:33:44:55:66）和 BLE KEY（32 位十六进制），填到下面。",
+                                            "⑤ 每次称重前，务必把米家 App 彻底杀掉（后台也关），否则秤只连米家、不发广播，本 App 收不到数据。",
+                                            "⑥ 别在米家里解绑重绑——每解绑一次 KEY 就重新生成，变了这里也要跟着改。KEY 提取一次后可一直用。",
+                                        )
+                                        guideSteps.forEach { step ->
+                                            Text(step, style = MaterialTheme.typography.bodySmall)
+                                            Spacer(Modifier.height(6.dp))
+                                        }
+                                        Text("BLE KEY 只存在你自己手机里，本 App 不上传、不联网。提取工具是第三方开源项目，账号密码请只在可信设备上输入。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.outline)
+                                        Spacer(Modifier.height(8.dp))
+                                        TextButton(onClick = {
+                                            try {
+                                                ctx.startActivity(Intent(Intent.ACTION_VIEW,
+                                                    android.net.Uri.parse("https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor")))
+                                            } catch (e: Exception) {
+                                                log("✗ 打不开浏览器：${e.message}")
+                                            }
+                                        }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
+                                            Text("打开提取工具说明页（需联网 · GitHub）",
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                            }
                             Row {
                                 listOf("XIAOMI_S400" to "S400", "XIAOMI_S800" to "S800").forEach { (id, label) ->
                                     FilterChip(selected = xiaomiModel == id, onClick = { xiaomiModel = id },
