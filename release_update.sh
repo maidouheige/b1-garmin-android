@@ -68,6 +68,8 @@ APK_SRC="app/build/outputs/apk/debug/app-debug.apk"
 APK_NAME="B1-Garmin-Sync-${TAG}.apk"
 APK_DST="distribution/${APK_NAME}"
 RAW_URL="https://gitee.com/${GITEE_USER}/${REPO}/raw/master/distribution/${APK_NAME}"
+# Gitee Release 附件直链（匿名可下、国内快、上限 100MB，突破 raw 的 10MB 限制）
+GITEE_RELEASE_URL="https://gitee.com/${GITEE_USER}/${REPO}/releases/download/${TAG}/${APK_NAME}"
 # GitHub Release 直链（APK 附件，无需登录）
 GITHUB_APK_URL="https://github.com/${GH_USER}/${REPO}/releases/download/${TAG}/${APK_NAME}"
 
@@ -79,8 +81,8 @@ echo "==> [1/8] 编译 APK"
 SIZE_BYTES=$(stat -f%z "$APK_SRC")
 SIZE_MB=$(echo "scale=2; $SIZE_BYTES/1048576" | bc)
 echo "    APK 大小: ${SIZE_MB} MB"
-if [ "$SIZE_BYTES" -gt 11000000 ]; then
-    echo "✗ APK 超过 10MB，Gitee raw 直链将要求登录，手机匿名下载会失败。需先瘦身。"
+if [ "$SIZE_BYTES" -gt 100000000 ]; then
+    echo "✗ APK 超过 100MB，超过 Gitee Release 附件上限。需先瘦身。"
     exit 1
 fi
 
@@ -88,14 +90,13 @@ echo "==> [2/8] 复制 APK 到 distribution/"
 cp "$APK_SRC" "$APK_DST"
 
 echo "==> [3/8] 生成 version.json"
-python3 - "$VC" "$VER" "$RAW_URL" "$GITHUB_APK_URL" "$NOTES" "$SIZE_BYTES" <<'PY'
+python3 - "$VC" "$VER" "$GITEE_RELEASE_URL" "$GITHUB_APK_URL" "$NOTES" "$SIZE_BYTES" "$RAW_URL" <<'PY'
 import json, sys
-vc, ver, gitee_url, github_url, notes, size = sys.argv[1:7]
-# APK > 10MB 时优先使用 GitHub Release 链接（无需登录）
-fallback_url = github_url if int(size) > 10000000 else gitee_url
-data = {"versionCode": int(vc), "versionName": ver, "url": fallback_url,
+vc, ver, gitee_url, github_url, notes, size, raw_url = sys.argv[1:8]
+# 主链接用 Gitee Release 附件：匿名可下、国内快、不受 raw 10MB 限制
+data = {"versionCode": int(vc), "versionName": ver, "url": gitee_url,
         "notes": notes, "size": int(size),
-        "giteeUrl": gitee_url, "githubUrl": github_url}
+        "giteeUrl": gitee_url, "githubUrl": github_url, "rawUrl": raw_url}
 with open("distribution/version.json", "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
     f.write("\n")
@@ -166,6 +167,23 @@ echo "==> [8/8] 创建 Release"
 # Gitee（登录态网页方式，幂等）
 GITEE_LOGIN="$GITEE_LOGIN" GITEE_PASSWORD="$GITEE_PASSWORD" \
     python3 gitee_release.py "$GITEE_USER" "$REPO" "$TAG" "${TAG} 更新" "$NOTES_FILE"
+# Gitee Release 附件上传 APK（匿名可下、国内快、上限 100MB，突破 raw 10MB 限制）
+GITEE_RID=$(curl -s "https://gitee.com/api/v5/repos/${GITEE_USER}/${REPO}/releases/tags/${TAG}" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
+if [ -n "$GITEE_RID" ]; then
+    HAS_APK=$(curl -s "https://gitee.com/api/v5/repos/${GITEE_USER}/${REPO}/releases/${GITEE_RID}/assets" \
+        | python3 -c "import sys,json; print('yes' if any(a.get('name')=='${APK_NAME}' for a in json.load(sys.stdin)) else 'no')" 2>/dev/null || echo "no")
+    if [ "$HAS_APK" = "yes" ]; then
+        echo "    Gitee Release 附件 ${APK_NAME} 已存在，跳过上传"
+    else
+        UPLOAD_RET=$(curl -s -X POST \
+            "https://gitee.com/api/v5/repos/${GITEE_USER}/${REPO}/releases/${GITEE_RID}/attach_files" \
+            -F "access_token=${GITEE_TOKEN}" -F "file=@${APK_DST}")
+        echo "$UPLOAD_RET" | python3 -c "import sys,json; d=json.load(sys.stdin); print('    Gitee APK 附件上传:', d.get('name') or d.get('message'))" 2>/dev/null || echo "    Gitee APK 附件上传：接口返回异常"
+    fi
+else
+    echo "    ⚠ 取不到 Gitee Release ID，APK 附件未上传（version.json 主链接可能失效）"
+fi
 # GitHub（gh CLI，带 APK 附件，幂等）
 if gh release view "$TAG" --repo "${GH_USER}/${REPO}" >/dev/null 2>&1; then
     echo "    GitHub Release ${TAG} 已存在，跳过创建"
@@ -182,13 +200,8 @@ rm -f "$NOTES_FILE"
 echo ""
 echo "✓ 双平台发布完成！"
 echo "  version.json: https://gitee.com/${GITEE_USER}/${REPO}/raw/master/distribution/version.json"
-if [ "$SIZE_BYTES" -gt 10000000 ]; then
-    echo "  ⚠️  APK 超过 10MB，请使用以下链接下载："
-    echo "      GitHub: ${GITHUB_APK_URL}"
-    echo "      Gitee:  ${RAW_URL}（需登录）"
-else
-    echo "  Gitee  APK 直链: ${RAW_URL}"
-fi
+echo "  Gitee  APK 直链（Release 附件，匿名可下）: ${GITEE_RELEASE_URL}"
+echo "  GitHub APK 直链: ${GITHUB_APK_URL}"
 echo "  Gitee  Release:  https://gitee.com/${GITEE_USER}/${REPO}/releases"
 echo "  GitHub Release:  https://github.com/${GH_USER}/${REPO}/releases/tag/${TAG}"
 echo ""
