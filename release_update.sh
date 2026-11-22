@@ -119,7 +119,8 @@ import sys
 ver, notes, user, repo, apk = sys.argv[1:6]
 tag = "v" + ver
 raw = "https://gitee.com/%s/%s/raw/master/distribution/%s" % (user, repo, apk)
-print("## %s（2026-11-18）\n" % tag)
+import datetime
+print("## %s（%s）\n" % (tag, datetime.date.today().isoformat()))
 print("### 本次更新\n- %s\n" % notes.replace("；", "\n- "))
 print("### 下载安装")
 print("- **APK 直链（手机直接点，推荐）**：%s" % raw)

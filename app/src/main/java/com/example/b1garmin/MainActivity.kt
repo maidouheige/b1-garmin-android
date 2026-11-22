@@ -38,6 +38,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.b1garmin.ble.ScaleReader
@@ -54,6 +55,7 @@ import com.example.b1garmin.ui.Profile
 import com.example.b1garmin.ui.ProfileStore
 import com.example.b1garmin.ui.ScaleCalib
 import com.example.b1garmin.ui.SettingsScreen
+import com.example.b1garmin.xiaomi.XiaomiCloudAuth
 import com.example.b1garmin.ui.VerifyEntry
 import com.example.b1garmin.ui.VerifyStore
 import kotlinx.coroutines.delay
@@ -1905,6 +1907,11 @@ class MainActivity : ComponentActivity() {
         var xiaomiModel by remember { mutableStateOf("XIAOMI_S400") }
         var showXiaomiForm by remember { mutableStateOf(false) }
         var showXiaomiGuide by remember { mutableStateOf(false) }
+        var showMiAuth by remember { mutableStateOf(false) }
+        var miAuthStatus by remember { mutableStateOf("准备中…") }
+        var miAuthSession by remember { mutableStateOf<XiaomiCloudAuth.Session?>(null) }
+        var miDevices by remember { mutableStateOf<List<XiaomiCloudAuth.ScaleDevice>>(emptyList()) }
+        var miQrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
         Surface(Modifier.fillMaxSize()) {
             Column(
@@ -2032,7 +2039,21 @@ class MainActivity : ComponentActivity() {
                             Text("小米秤只发加密广播，扫名字认不出。需要这台秤的 MAC 和 32 位 BLE KEY，填在下面即可。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.outline)
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(8.dp))
+                            // 米家扫码授权（推荐，无图形验证码，能拿到完整授权）
+                            Button(onClick = {
+                                showMiAuth = true
+                                miQrBitmap = null
+                                miAuthSession = null
+                                miDevices = emptyList()
+                                miAuthStatus = "正在获取登录二维码…"
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Text("用米家 App 扫码自动获取 KEY")
+                            }
+                            Text("点一下出二维码 → 用米家 App 扫码确认 → 自动读取账号下的体脂秤，一键填入 MAC 和 BLE KEY。无需密码、没有图形验证码。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.height(8.dp))
                             TextButton(onClick = { showXiaomiGuide = !showXiaomiGuide },
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
                                 Text(if (showXiaomiGuide) "收起「怎么拿到 KEY」" else "怎么拿到 MAC 和 BLE KEY？（只需弄一次）",
@@ -2125,6 +2146,135 @@ class MainActivity : ComponentActivity() {
                             Text("S400 赤足能测双频阻抗；S800 广播只能读体重，体脂按 BMI 估算，均为实验性。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
+
+                // ---------------- 米家授权对话框（实验性 · 扫码登录） ----------------
+                if (showMiAuth) {
+                    Dialog(onDismissRequest = { showMiAuth = false }) {
+                        Surface(color = MaterialTheme.colorScheme.surface,
+                            shape = MaterialTheme.shapes.medium,
+                            modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                            Column(
+                                Modifier.padding(16.dp).verticalScroll(rememberScrollState())
+                            ) {
+                                Text("米家扫码授权获取 KEY", style = MaterialTheme.typography.titleMedium)
+                                Spacer(Modifier.height(6.dp))
+                                Text(miAuthStatus, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline)
+                                Spacer(Modifier.height(10.dp))
+
+                                // 二维码区域（含倒计时/重试）
+                                miQrBitmap?.let { bmp ->
+                                    Surface(color = androidx.compose.ui.graphics.Color.White,
+                                        shape = MaterialTheme.shapes.small,
+                                        modifier = Modifier.fillMaxWidth()) {
+                                        Image(bmp, contentDescription = "米家登录二维码",
+                                            modifier = Modifier.fillMaxWidth().height(230.dp).padding(8.dp),
+                                            contentScale = ContentScale.Fit)
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text("用米家 App 扫上面的二维码，并在手机上点「确认登录」。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline)
+                                }
+
+                                Spacer(Modifier.height(10.dp))
+                                Button(onClick = {
+                                    miQrBitmap = null
+                                    miAuthStatus = "正在获取登录二维码…"
+                                    scope.launch {
+                                        val ticket = XiaomiCloudAuth.requestQrLogin()
+                                        if (ticket.isFailure) {
+                                            miAuthStatus = "✗ 获取二维码失败：${ticket.exceptionOrNull()?.message ?: "网络错误"}"
+                                            return@launch
+                                        }
+                                        val t = ticket.getOrThrow()
+                                        val qrPng = XiaomiCloudAuth.downloadQr(t.qrImageUrl)
+                                        if (qrPng.isSuccess) {
+                                            val bytes = qrPng.getOrThrow()
+                                            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                            if (bmp != null) miQrBitmap = bmp.asImageBitmap()
+                                        }
+                                        miAuthStatus = "请用米家 App 扫描二维码并确认登录…"
+                                        val result = XiaomiCloudAuth.waitForScan(t,
+                                            shouldStop = { !showMiAuth })
+                                        if (result.isFailure) {
+                                            miAuthStatus = "✗ ${result.exceptionOrNull()?.message ?: "扫码失败"}"
+                                            return@launch
+                                        }
+                                        val s = result.getOrThrow()
+                                        miAuthSession = s
+                                        miQrBitmap = null
+                                        miAuthStatus = "登录成功，正在读取设备列表…"
+                                        val devs = XiaomiCloudAuth.listDevices(s)
+                                        if (devs.isFailure) {
+                                            miAuthStatus = "✗ 读取设备失败：${devs.exceptionOrNull()?.message ?: "未知错误"}"
+                                            return@launch
+                                        }
+                                        miDevices = devs.getOrThrow()
+                                        miAuthStatus = if (miDevices.isEmpty())
+                                            "账号下没找到体脂秤，请确认秤已在米家 App 配对。"
+                                        else
+                                            "找到 ${miDevices.size} 台设备，点「获取 KEY」自动填入。"
+                                    }
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (miQrBitmap == null) "获取 / 刷新二维码" else "重新获取二维码")
+                                }
+
+                                // 已找到设备时，显示设备列表 + 一键填入
+                                if (miDevices.isNotEmpty()) {
+                                    Spacer(Modifier.height(12.dp))
+                                    Text("你的体脂秤：", style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.outline)
+                                    miDevices.forEach { d ->
+                                        Spacer(Modifier.height(4.dp))
+                                        Surface(color = MaterialTheme.colorScheme.surfaceVariant,
+                                            shape = MaterialTheme.shapes.small,
+                                            modifier = Modifier.fillMaxWidth()) {
+                                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Column(Modifier.weight(1f)) {
+                                                    Text(d.name, style = MaterialTheme.typography.bodyMedium)
+                                                    Text("${d.mac}  ·  ${d.model}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.outline)
+                                                }
+                                                Spacer(Modifier.width(8.dp))
+                                                Button(onClick = {
+                                                    xiaomiMac = d.mac
+                                                    xiaomiModel = when {
+                                                        d.model.contains("S800", ignoreCase = true) -> "XIAOMI_S800"
+                                                        else -> "XIAOMI_S400"
+                                                    }
+                                                    miAuthStatus = "已填入 MAC，正在拉取 BLE KEY…"
+                                                    scope.launch {
+                                                        val session = miAuthSession
+                                                        if (session == null) {
+                                                            miAuthStatus = "✗ 登录会话丢失，请重新扫码"
+                                                            return@launch
+                                                        }
+                                                        val keyResult = XiaomiCloudAuth.getBeaconKey(session, d.did)
+                                                        if (keyResult.isSuccess) {
+                                                            xiaomiKey = keyResult.getOrThrow()
+                                                            miAuthStatus = "✓ KEY 已获取，点「绑定小米秤」完成绑定"
+                                                            log("✓ 已获取 ${d.name} 的 BLE KEY: ${xiaomiKey.take(8)}…")
+                                                        } else {
+                                                            miAuthStatus = "✗ 获取 KEY 失败：${keyResult.exceptionOrNull()?.message}"
+                                                        }
+                                                    }
+                                                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                                                    Text("获取 KEY")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(16.dp))
+                                TextButton(onClick = { showMiAuth = false },
+                                    modifier = Modifier.fillMaxWidth()) { Text("关闭") }
+                            }
                         }
                     }
                 }

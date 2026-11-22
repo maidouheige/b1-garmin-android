@@ -42,6 +42,32 @@ class WebLogin(
         onTicket(ticket)
     }
 
+    /**
+     * 注入 CSS：把 Garmin 登录页的深色输入框改成白底黑字。
+     * 登录页是 iOS UA 渲染的移动页，输入框默认近黑底 + 浅灰字，看着别扭；
+     * 这里强制覆盖成白底黑字，同时保留蓝色登录按钮和占位提示的可读性。
+     */
+    private val styleJs = """
+(function() {
+  if (window.__b1_styled) return;
+  window.__b1_styled = true;
+  var s = document.createElement('style');
+  s.type = 'text/css';
+  s.id = 'b1-login-style';
+  s.textContent = [
+    'input, textarea, select {',
+    '  background-color: #ffffff !important;',
+    '  color: #111111 !important;',
+    '  border: 1px solid #b8b8b8 !important;',
+    '  -webkit-text-fill-color: #111111 !important;',
+    '}',
+    'input::placeholder, textarea::placeholder { color: #888888 !important; -webkit-text-fill-color: #888888 !important; }',
+    'label { color: #222222 !important; }'
+  ].join('\n');
+  (document.head || document.documentElement).appendChild(s);
+})();
+""".trimIndent()
+
     /** 注入 JS：hook fetch + XHR 抓登录响应，同时兜底监听 URL。 */
     private val hookJs = """
 (function() {
@@ -127,6 +153,7 @@ class WebLogin(
 
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
+                        view.evaluateJavascript(styleJs, null)
                         view.evaluateJavascript(hookJs, null)
                         Log.d(TAG, "page finished: ${url.take(90)}")
                     }

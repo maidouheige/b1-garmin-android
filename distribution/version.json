@@ -1,7 +1,7 @@
 {
-  "versionCode": 47,
-  "versionName": "0.20.4",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.4.apk",
-  "notes": "首页账号名改回显示佳明账户资料里的姓名,用户可在Garmin个人资料中自行设置显示;仅在姓名为空时才退回昵称或默认兜底;头像不变;仅显示逻辑改动,称重与上传主链路不变",
-  "size": 9837733
+  "versionCode": 49,
+  "versionName": "0.21.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.0.apk",
+  "notes": "新增米家体脂秤扫码授权获取 KEY（实验性功能，需米家账号已绑定小米体脂秤 S400/S800 才能用；非官方协议、上游已停更，可能失效；对你现有的阿福/薄荷 B1 秤称重同步无任何影响）；佳明国内版/国际版网页登录页输入框改为白底黑字，不再显示为深色底",
+  "size": 9878756
 }
