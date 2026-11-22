@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.b1garmin"
         minSdk = 26
         targetSdk = 34
-        versionCode = 52
-        versionName = "0.21.3"
+        versionCode = 53
+        versionName = "0.21.4"
     }
 
     buildTypes {

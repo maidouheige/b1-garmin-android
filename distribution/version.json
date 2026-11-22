@@ -1,7 +1,7 @@
 {
-  "versionCode": 52,
-  "versionName": "0.21.3",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.3.apk",
-  "notes": "修复扫码登录状态更新bug，添加详细日志便于排查",
-  "size": 9878792
+  "versionCode": 53,
+  "versionName": "0.21.4",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.4.apk",
+  "notes": "新增全屏二维码功能，方便单一手机用户截图或他设备扫描",
+  "size": 9882888
 }

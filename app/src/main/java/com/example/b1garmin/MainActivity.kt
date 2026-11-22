@@ -1918,6 +1918,7 @@ class MainActivity : ComponentActivity() {
         var miDevices by remember { mutableStateOf<List<XiaomiCloudAuth.ScaleDevice>>(emptyList()) }
         var miQrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
         var qrPngBytes by remember { mutableStateOf<ByteArray?>(null) }
+        var showMiQrFullscreen by remember { mutableStateOf(false) }
 
         Surface(Modifier.fillMaxSize()) {
             Column(
@@ -2186,43 +2187,76 @@ class MainActivity : ComponentActivity() {
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.outline)
                                     Spacer(Modifier.height(4.dp))
-                                    // 保存二维码图片，让用户能用相册/文件管理打开后分享给米家 App
-                                    Row(verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxWidth()) {
-                                        Text("💡 截图不方便？先保存图片再用米家 App 相册扫码：",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.primary)
-                                        Spacer(Modifier.width(6.dp))
-                                        Button(onClick = {
-                                            val bytes = qrPngBytes ?: byteArrayOf()
-                                            if (bytes.isEmpty()) {
-                                                miAuthStatus = "✗ 二维码数据为空，请先重新获取"
-                                                return@Button
-                                            }
-                                            val dir = File(ctx.cacheDir, "qrcodes")
-                                            if (!dir.exists()) dir.mkdirs()
-                                            val f = File(dir, "mi_qr_${System.currentTimeMillis()}.png")
-                                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                                ?.let { bmp ->
-                                                    java.io.FileOutputStream(f).use { out ->
-                                                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-                                                    }
+                                    // 全屏显示二维码：方便用另一台设备扫描，或系统截屏时二维码占满全屏
+                                    Button(onClick = { showMiQrFullscreen = true },
+                                        enabled = qrPngBytes != null,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                                        Text("📱 全屏显示二维码（方便截图/他设备扫描）")
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    // 保存二维码图片按钮
+                                    OutlinedButton(onClick = {
+                                        val bytes = qrPngBytes ?: byteArrayOf()
+                                        if (bytes.isEmpty()) {
+                                            miAuthStatus = "✗ 二维码数据为空，请先重新获取"
+                                            return@OutlinedButton
+                                        }
+                                        val dir = File(ctx.cacheDir, "qrcodes")
+                                        if (!dir.exists()) dir.mkdirs()
+                                        val f = File(dir, "mi_qr_${System.currentTimeMillis()}.png")
+                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                            ?.let { b ->
+                                                java.io.FileOutputStream(f).use { out ->
+                                                    b.compress(Bitmap.CompressFormat.PNG, 100, out)
                                                 }
-                                            try {
-                                                val uri = FileProvider.getUriForFile(
-                                                    ctx, "${ctx.packageName}.fileprovider", f)
-                                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                                                    setDataAndType(uri, "image/png")
-                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                }
-                                                ctx.startActivity(viewIntent)
-                                            } catch (e: Exception) {
-                                                miAuthStatus = "✗ 打开图片失败：${e.message}"
                                             }
-                                        }, enabled = qrPngBytes != null,
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
-                                            Text(if (qrPngBytes != null) "保存二维码图片" else "二维码加载中…")
+                                        try {
+                                            val uri = FileProvider.getUriForFile(
+                                                ctx, "${ctx.packageName}.fileprovider", f)
+                                            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                                setDataAndType(uri, "image/png")
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            ctx.startActivity(viewIntent)
+                                            miAuthStatus = "✓ 已打开图片，请用文件管理器保存到相册"
+                                        } catch (e: Exception) {
+                                            miAuthStatus = "✗ 打开图片失败：${e.message}"
+                                        }
+                                    }, modifier = Modifier.fillMaxWidth()) {
+                                        Text("💾 保存二维码图片到相册（注意：截图后二维码会过期，需立即使用）")
+                                    }
+                                }
+
+                                // 全屏二维码对话框
+                                if (showMiQrFullscreen) {
+                                    Dialog(onDismissRequest = { showMiQrFullscreen = false }) {
+                                        Surface(
+                                            color = androidx.compose.ui.graphics.Color.White,
+                                            shape = MaterialTheme.shapes.large,
+                                            modifier = Modifier.fillMaxSize().padding(16.dp)
+                                        ) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                                                
+                                                modifier = Modifier.fillMaxSize()) {
+                                                Text("全屏二维码", style = MaterialTheme.typography.titleLarge)
+                                                Spacer(Modifier.height(16.dp))
+                                                miQrBitmap?.let { bmp ->
+                                                    Image(bmp, contentDescription = "米家登录二维码",
+                                                        modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                                                        contentScale = ContentScale.Fit)
+                                                }
+                                                Spacer(Modifier.height(24.dp))
+                                                Text("用米家 App 扫描上面的二维码",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.outline)
+                                                Spacer(Modifier.weight(1f))
+                                                TextButton(onClick = { showMiQrFullscreen = false },
+                                                    modifier = Modifier.fillMaxWidth()) {
+                                                    Text("关闭")
+                                                }
+                                            }
                                         }
                                     }
                                 }
