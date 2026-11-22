@@ -2187,45 +2187,17 @@ class MainActivity : ComponentActivity() {
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.outline)
                                     Spacer(Modifier.height(4.dp))
-                                    // 全屏显示二维码：方便用另一台设备扫描，或系统截屏时二维码占满全屏
+                                    // 重要提示：小米二维码防截屏，必须现场扫码
+                                    Text("⚠️ 注意：小米二维码有防截屏保护，截图/录屏后扫码会过期！必须用米家 App 直接扫描屏幕上的二维码。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error)
+                                    Spacer(Modifier.height(4.dp))
+                                    // 全屏显示二维码：方便用另一台设备扫描
                                     Button(onClick = { showMiQrFullscreen = true },
                                         enabled = qrPngBytes != null,
                                         modifier = Modifier.fillMaxWidth(),
                                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                                        Text("📱 全屏显示二维码（方便截图/他设备扫描）")
-                                    }
-                                    Spacer(Modifier.height(4.dp))
-                                    // 保存二维码图片按钮
-                                    OutlinedButton(onClick = {
-                                        val bytes = qrPngBytes ?: byteArrayOf()
-                                        if (bytes.isEmpty()) {
-                                            miAuthStatus = "✗ 二维码数据为空，请先重新获取"
-                                            return@OutlinedButton
-                                        }
-                                        val dir = File(ctx.cacheDir, "qrcodes")
-                                        if (!dir.exists()) dir.mkdirs()
-                                        val f = File(dir, "mi_qr_${System.currentTimeMillis()}.png")
-                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                            ?.let { b ->
-                                                java.io.FileOutputStream(f).use { out ->
-                                                    b.compress(Bitmap.CompressFormat.PNG, 100, out)
-                                                }
-                                            }
-                                        try {
-                                            val uri = FileProvider.getUriForFile(
-                                                ctx, "${ctx.packageName}.fileprovider", f)
-                                            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                                                setDataAndType(uri, "image/png")
-                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                            ctx.startActivity(viewIntent)
-                                            miAuthStatus = "✓ 已打开图片，请用文件管理器保存到相册"
-                                        } catch (e: Exception) {
-                                            miAuthStatus = "✗ 打开图片失败：${e.message}"
-                                        }
-                                    }, modifier = Modifier.fillMaxWidth()) {
-                                        Text("💾 保存二维码图片到相册（注意：截图后二维码会过期，需立即使用）")
+                                        Text("📱 全屏显示二维码（方便他设备扫描，不可截图）")
                                     }
                                 }
 

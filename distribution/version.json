@@ -1,7 +1,7 @@
 {
-  "versionCode": 53,
-  "versionName": "0.21.4",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.4.apk",
-  "notes": "新增全屏二维码功能，方便单一手机用户截图或他设备扫描",
+  "versionCode": 54,
+  "versionName": "0.21.5",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.5.apk",
+  "notes": "移除无效的截图/保存功能，添加防截屏提示，明确说明必须现场扫码",
   "size": 9882888
 }
