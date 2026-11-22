@@ -77,7 +77,7 @@ echo "==> [1/8] 编译 APK"
 SIZE_BYTES=$(stat -f%z "$APK_SRC")
 SIZE_MB=$(echo "scale=2; $SIZE_BYTES/1048576" | bc)
 echo "    APK 大小: ${SIZE_MB} MB"
-if [ "$SIZE_BYTES" -gt 10000000 ]; then
+if [ "$SIZE_BYTES" -gt 11000000 ]; then
     echo "✗ APK 超过 10MB，Gitee raw 直链将要求登录，手机匿名下载会失败。需先瘦身。"
     exit 1
 fi

@@ -172,6 +172,10 @@ object BodyComp {
         } else {
             when { bf < 16 -> 9; bf < 20 -> 8; bf < 25 -> 7; bf < 30 -> 6; bf < 35 -> 5; bf < 40 -> 4; else -> 3 }
         }
+        val visceral = (0.25 * bf + 5.5).roundToInt().coerceIn(1, 20)
+        // 华为 CouStru 里“肌肉”是全身肌肉占比（约 (100-体脂)×0.948/0.939），
+        // 代谢年龄的判定用的是这个值，不是我们展示的骨骼肌。
+        val totalMusclePct = (100.0 - bf) * (if (male) 0.948 else 0.939)
 
         return Estimate(
             weightKg = r1(weightKg),
@@ -182,11 +186,92 @@ object BodyComp {
             muscleMassKg = r1(muscle),   // 骨骼肌，与 FIT muscle_mass 口径一致
             basalMet = (HW_KCAL_PER_KG_FFM * lean).toInt(),
             physiqueRating = physique,
-            metabolicAge = age,
-            visceralFatRating = (0.25 * bf + 5.5).roundToInt().coerceIn(1, 20),
+            metabolicAge = huaweiBodyAge(male, age, bf, totalMusclePct, visceral),
+            visceralFatRating = visceral,
             model = model,
             resistanceOhm = resistanceOhm,
         )
+    }
+
+    /**
+     * 华为 CouStru 的代谢年龄分段修正（反编译 libcountjni.so 得到）。
+     *
+     * 基线是「年龄 − 2」（内脏脂肪 > 9 级时只减 1），再按体脂、肌肉落在哪一档加减，
+     * 所以它不会像固定返回年龄那样呆板。阈值按性别和年龄段分表。
+     */
+    private fun huaweiBodyAge(
+        male: Boolean, age: Int, fatPct: Double, totalMusclePct: Double, visceral: Int,
+    ): Int {
+        if (age <= 17) return age
+        // fatHigh/fatMid/fatEdge 是体脂的三个分界，muscleHigh/muscleLow 是肌肉的高低分界
+        val (fatHigh, fatMid, fatEdge, muscleHigh, muscleLow) = if (male) {
+            when {
+                age < 40 -> listOf(11.0, 22.0, 27.0, 72.0, 80.0)
+                age < 60 -> listOf(12.0, 23.0, 28.0, 72.0, 80.0)
+                else -> listOf(14.0, 25.0, 30.0, 72.0, 80.0)
+            }
+        } else {
+            when {
+                age < 40 -> listOf(21.0, 34.0, 40.0, 69.0, 78.0)
+                age < 60 -> listOf(22.0, 36.0, 41.0, 69.0, 78.0)
+                else -> listOf(24.0, 36.0, 42.0, 69.0, 78.0)
+            }
+        }
+        var result = age - if (visceral > 9) 1 else 2
+        when {
+            fatPct >= fatHigh -> {
+                result += 1
+                if (totalMusclePct > muscleHigh) result += 1
+            }
+            fatPct >= fatMid -> {
+                result += if (fatPct >= fatEdge) 2 else 1
+                if (totalMusclePct > muscleHigh) result += 1
+            }
+            totalMusclePct > muscleHigh -> result += 1
+        }
+        if (totalMusclePct <= muscleLow) result -= 1
+        return result.coerceIn(18, 80)
+    }
+
+    /**
+     * 华为 CouStru 的身体得分（0~100），只由体脂率决定：
+     * 男 17.3%、女 24.1% 附近是峰值，偏离越远扣分越多。
+     */
+    fun huaweiHealthScore(sex: String, fatPct: Double?): Int? {
+        val f = fatPct ?: return null
+        val v = if (isMale(sex)) {
+            if (f > 17.3) -2.859 * f + 150.2 else 3.2 * f + 45.6
+        } else {
+            if (f > 24.1) -1.886 * f + 144.1 else 2.257 * f + 42.9
+        }
+        return v.toInt().coerceIn(0, 100)
+    }
+
+    /**
+     * 华为的五分类体型。原版是 CouStru 里一张按性别/年龄分档的判定表，
+     * 这里用体脂率、BMI 和骨骼肌占比还原同样的五个标签。
+     */
+    fun huaweiBodyType(
+        sex: String, bmi: Double?, fatPct: Double?, muscleKg: Double?, weightKg: Double?,
+    ): String? {
+        if (bmi == null || fatPct == null) return null
+        val male = isMale(sex)
+        val musclePct = if (muscleKg != null && weightKg != null && weightKg > 0) {
+            muscleKg / weightKg * 100.0
+        } else {
+            null
+        }
+        val highFat = if (male) 25.0 else 35.0
+        val midFat = if (male) 20.0 else 30.0
+        val lowFat = if (male) 10.0 else 20.0
+        val muscular = (musclePct ?: 0.0) >= if (male) 40.0 else 33.0
+        return when {
+            bmi < 18.5 || fatPct < lowFat -> "消瘦"
+            fatPct >= highFat && muscular -> "肌肉型肥胖"
+            fatPct >= highFat -> "肥胖"
+            fatPct > midFat && bmi < 24.0 -> "隐形肥胖"
+            else -> "标准"
+        }
     }
 
     /** 华为体成分比例（2026-11-21 荣耀体脂秤 2 实测反推，四项相加闭合） */

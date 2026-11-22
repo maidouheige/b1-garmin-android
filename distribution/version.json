@@ -1,7 +1,7 @@
 {
-  "versionCode": 54,
-  "versionName": "0.21.5",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.5.apk",
-  "notes": "移除无效的截图/保存功能，添加防截屏提示，明确说明必须现场扫码",
-  "size": 9882888
+  "versionCode": 55,
+  "versionName": "0.22.0",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.22.0.apk",
+  "notes": "合并 QingMings 改进：添加 Room 数据库、后台自动补传、深色模式框架",
+  "size": 10525058
 }

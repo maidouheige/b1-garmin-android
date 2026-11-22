@@ -5,9 +5,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * FIT 文件生成 —— 从 fit_writer.py 逐行移植，其实现忠实于 python-garminconnect 的
- * FitEncoderWeight（已验证可上传 Garmin Connect）。
- * 生成含 weight_scale 消息的 FIT，等价于真 Index S2 上传的体重记录。
+ * FIT 文件生成 —— 与电脑版 sync_tool/fit.py 逐字段保持一致。
+ *
+ * 那个 Python 版本已经实测能正常上传 Garmin Connect 并正确显示体成分，
+ * 所以这里只做等价移植：同样的消息、字段顺序、缩放系数、序列号/厂商号，
+ * 同样的 half-up 量化，并且和它一样**不写** metabolic_age（Garmin 现在会把它
+ * 渲染成「年龄 × 一年的毫秒数」，属于服务端显示回归）。
  */
 object FitWriter {
     private val CRC_TABLE = intArrayOf(
@@ -35,11 +38,15 @@ object FitWriter {
     private val UINT8 = BT(1, 0x02, 0xFF)
     private val UINT16 = BT(2, 0x84, 0xFFFF)
     private val UINT32 = BT(4, 0x86, 0xFFFFFFFFL)
+    private val UINT32Z = BT(4, 0x8C, 0L)
 
     private const val FIT_EPOCH_OFFSET = 631065600L
-    private fun fitTimestamp(epochSec: Long) = (epochSec - FIT_EPOCH_OFFSET).toInt()
+    private const val SERIAL_NUMBER = 0x5A17C0DEL
+    private const val MANUFACTURER = 255L          // 255 = development，和电脑版一致
+    private const val FILE_TYPE_WEIGHT = 9L
+    private fun fitTimestamp(epochSec: Long): Long = epochSec - FIT_EPOCH_OFFSET
 
-    private data class Field(val num: Int, val bt: BT, val value: Long?, val scale: Double)
+    private data class Field(val num: Int, val bt: BT, val value: Long?, val scale: Double = 1.0)
 
     private class Encoder {
         /** 只存消息数据（不含文件头），finish 时再拼 头+数据+CRC */
@@ -50,6 +57,9 @@ object FitWriter {
         private fun le32(v: Int) = byteArrayOf(
             (v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte(),
             ((v shr 16) and 0xFF).toByte(), ((v shr 24) and 0xFF).toByte())
+
+        /** FIT 分辨率量化用 half-up（Python 侧是 floor(x + 0.5)），保证两边逐字节一致 */
+        private fun quantize(v: Double, scale: Double) = Math.floor(v * scale + 0.5).toLong()
 
         private fun buildContent(content: List<Field>): Pair<ByteArray, ByteArray> {
             val defs = ByteArrayOutputStream(); val vals = ByteArrayOutputStream()
@@ -77,32 +87,48 @@ object FitWriter {
             dataBuf.write(vals)
         }
 
-        fun writeFileInfo() = writeMessage(0, 0, listOf(
-            Field(0, ENUM, 9L, 1.0), Field(1, UINT16, 15L, 1.0), Field(2, UINT16, 2853L, 1.0)), true)
+        fun writeFileInfo(ts: Long) = writeMessage(0, 0, listOf(
+            Field(3, UINT32Z, SERIAL_NUMBER),
+            Field(4, UINT32, ts),
+            Field(1, UINT16, MANUFACTURER),
+            Field(2, UINT16, 0L),
+            Field(5, UINT16, null),
+            Field(0, ENUM, FILE_TYPE_WEIGHT),
+        ), true)
 
         fun writeFileCreator() = writeMessage(49, 1, listOf(
-            Field(0, UINT16, null, 1.0), Field(1, UINT8, null, 1.0)), true)
+            Field(0, UINT16, 100L), Field(1, UINT8, null)), true)
 
-        fun writeDeviceInfo(ts: Int) = writeMessage(23, 2, listOf(
-            Field(253, UINT32, ts.toLong() and 0xFFFFFFFFL, 1.0), Field(2, UINT16, 15L, 1.0),
-            Field(4, UINT16, 2853L, 1.0), Field(0, UINT8, 0L, 1.0), Field(1, UINT8, 119L, 1.0)), true)
+        fun writeDeviceInfo(ts: Long) = writeMessage(23, 2, listOf(
+            Field(253, UINT32, ts),
+            Field(3, UINT32Z, SERIAL_NUMBER),
+            Field(7, UINT32, null),
+            Field(8, UINT32, null),
+            Field(2, UINT16, MANUFACTURER),
+            Field(4, UINT16, null),
+            Field(5, UINT16, null),
+            Field(10, UINT16, null),
+            Field(0, UINT8, 0L),
+            Field(1, UINT8, null),
+            Field(6, UINT8, null),
+            Field(11, UINT8, null),
+        ), true)
 
         fun writeWeightScale(e: BodyComp.Estimate, timestampSec: Long) {
-            fun scaled(v: Double?, s: Double) = v?.let { (it * s).toLong() }
+            fun scaled(v: Double?, s: Double) = v?.let { quantize(it, s) }
             val content = listOf(
-                Field(253, UINT32, fitTimestamp(timestampSec).toLong() and 0xFFFFFFFFL, 1.0),
-                Field(0, UINT16, scaled(e.weightKg, 100.0), 1.0),
-                Field(1, UINT16, scaled(e.bodyFatPercent, 100.0), 1.0),
-                Field(2, UINT16, scaled(e.percentHydration, 100.0), 1.0),
-                Field(3, UINT16, null, 1.0),
-                Field(4, UINT16, scaled(e.boneMassKg, 100.0), 1.0),
-                Field(5, UINT16, scaled(e.muscleMassKg, 100.0), 1.0),
-                Field(7, UINT16, e.basalMet.toLong() * 4, 1.0),
-                Field(9, UINT16, null, 1.0),
-                Field(8, UINT8, e.physiqueRating.toLong(), 1.0),
-                Field(10, UINT8, e.metabolicAge.toLong(), 1.0),
-                Field(11, UINT8, e.visceralFatRating.toLong(), 1.0),
-                Field(13, UINT16, scaled(e.bmi, 10.0), 1.0),
+                Field(253, UINT32, fitTimestamp(timestampSec)),
+                Field(0, UINT16, scaled(e.weightKg, 100.0)),
+                Field(1, UINT16, scaled(e.bodyFatPercent, 100.0)),
+                Field(2, UINT16, scaled(e.percentHydration, 100.0)),
+                Field(3, UINT16, null),
+                Field(4, UINT16, scaled(e.boneMassKg, 100.0)),
+                Field(5, UINT16, scaled(e.muscleMassKg, 100.0)),
+                Field(7, UINT16, e.basalMet.toLong() * 4),
+                Field(9, UINT16, null),
+                Field(8, UINT8, null),
+                Field(11, UINT8, e.visceralFatRating.toLong()),
+                Field(13, UINT16, scaled(e.bmi, 10.0)),
             )
             writeMessage(30, 3, content, !weightScaleDefined)
             weightScaleDefined = true
@@ -122,12 +148,18 @@ object FitWriter {
     }
 
     /** 生成 weight_scale FIT 字节。timestampSec = 称重时刻的 Unix 秒。 */
-    fun build(e: BodyComp.Estimate, timestampSec: Long): ByteArray {
+    fun build(e: BodyComp.Estimate, timestampSec: Long): ByteArray =
+        buildMany(listOf(e to timestampSec))
+
+    /** 一次生成多条 weight_scale 记录（导出历史用），时间戳按各自测量时刻写入。 */
+    fun buildMany(items: List<Pair<BodyComp.Estimate, Long>>): ByteArray {
+        require(items.isNotEmpty()) { "至少需要一条记录" }
         val enc = Encoder()
-        enc.writeFileInfo()
+        val firstTs = items.first().second
+        enc.writeFileInfo(fitTimestamp(firstTs))
         enc.writeFileCreator()
-        enc.writeDeviceInfo(fitTimestamp(timestampSec))
-        enc.writeWeightScale(e, timestampSec)
+        enc.writeDeviceInfo(fitTimestamp(firstTs))
+        items.forEach { (e, ts) -> enc.writeWeightScale(e, ts) }
         return enc.finish()
     }
 }
