@@ -2046,8 +2046,10 @@ class MainActivity : ComponentActivity() {
                                     Column(Modifier.padding(12.dp)) {
                                         val guideSteps = listOf(
                                             "① 先在米家 App 里把这台秤配对好，并光脚完整称一次，让云端为你的账号生成 KEY。",
-                                            "② 电脑上运行开源工具「Xiaomi-cloud-tokens-extractor」：Windows 下载 token_extractor.exe 双击；Linux 一行命令。用米家账号密码或扫码登录，服务器区域选 cn（国内账号）。",
-                                            "③ 在设备列表里找这台秤。注意：S400 在云端常不叫「S400」，而是 yunmai.scales.ms103 / ms104 / ms107 或 xiaomi.scales.ms110；S800 找 MS116。",
+                                            "② 拿 KEY 有两个办法，二选一：",
+                                            "    · 手机网页（免电脑）：点下方「手机网页提取」按钮，浏览器里登录米家账号（选 cn 区），在设备列表找这台秤，复制 MAC 和 BLE KEY。注意：这是第三方网站，要填米家账号密码；国内部分网络打不开，打不开就用下面电脑版。",
+                                            "    · 电脑版（更稳）：电脑运行开源工具「Xiaomi-cloud-tokens-extractor」，Windows 下双击 token_extractor.exe，登录后同样在设备列表里复制 MAC 和 BLE KEY。",
+                                            "③ 找设备时的坑：S400 在云端常不叫「S400」，而是 yunmai.scales.ms103 / ms104 / ms107 或 xiaomi.scales.ms110；S800 找 MS116。",
                                             "④ 复制它的 MAC（如 11:22:33:44:55:66）和 BLE KEY（32 位十六进制），填到下面。",
                                             "⑤ 每次称重前，务必把米家 App 彻底杀掉（后台也关），否则秤只连米家、不发广播，本 App 收不到数据。",
                                             "⑥ 别在米家里解绑重绑——每解绑一次 KEY 就重新生成，变了这里也要跟着改。KEY 提取一次后可一直用。",
@@ -2056,10 +2058,21 @@ class MainActivity : ComponentActivity() {
                                             Text(step, style = MaterialTheme.typography.bodySmall)
                                             Spacer(Modifier.height(6.dp))
                                         }
-                                        Text("BLE KEY 只存在你自己手机里，本 App 不上传、不联网。提取工具是第三方开源项目，账号密码请只在可信设备上输入。",
+                                        Text("BLE KEY 只存在你自己手机里，本 App 不上传、不联网。网页提取工具是第三方网站，要输入米家账号密码，介意的话请用电脑版开源工具。",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.outline)
                                         Spacer(Modifier.height(8.dp))
+                                        TextButton(onClick = {
+                                            try {
+                                                ctx.startActivity(Intent(Intent.ACTION_VIEW,
+                                                    android.net.Uri.parse("https://xiaomi-token-web.asd.workers.dev/")))
+                                            } catch (e: Exception) {
+                                                log("✗ 打不开浏览器：${e.message}")
+                                            }
+                                        }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
+                                            Text("打开手机网页提取 KEY（第三方 · 可能打不开）",
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
                                         TextButton(onClick = {
                                             try {
                                                 ctx.startActivity(Intent(Intent.ACTION_VIEW,
@@ -2068,7 +2081,7 @@ class MainActivity : ComponentActivity() {
                                                 log("✗ 打不开浏览器：${e.message}")
                                             }
                                         }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
-                                            Text("打开提取工具说明页（需联网 · GitHub）",
+                                            Text("打开电脑版工具说明（GitHub）",
                                                 style = MaterialTheme.typography.bodySmall)
                                         }
                                     }

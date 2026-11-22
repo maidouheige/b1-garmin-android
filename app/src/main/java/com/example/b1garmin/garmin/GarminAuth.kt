@@ -519,9 +519,14 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
                     return@withContext Result.failure(Exception("读取账号资料失败 HTTP ${resp.code}"))
                 }
                 val j = JSONObject(text)
-                // 接口返回的是 large/medium/small 三个尺寸，没有单个 profileImageUrl；
-                // displayName 常常是 GUID，优先用 fullName 当显示名
-                val name = j.optString("fullName").ifBlank { j.optString("displayName") }
+                // 接口返回的是 large/medium/small 三个尺寸，没有单个 profileImageUrl。
+                // 显示名用 displayName（账号昵称），不用 fullName（真实姓名）。
+                // 极少数账号 displayName 是一串 GUID，这时用中性兜底，绝不退回真实姓名。
+                val display = j.optString("displayName").trim()
+                val guidLike =
+                    Regex("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").matches(display) ||
+                    Regex("(?i)^[0-9a-f]{32}$").matches(display)
+                val name = if (display.isBlank() || guidLike) "Garmin 用户" else display
                 val avatarRaw = listOf(
                     "profileImageUrlLarge", "profileImageUrlMedium", "profileImageUrlSmall"
                 ).map { j.optString(it) }
