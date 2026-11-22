@@ -1,7 +1,7 @@
 {
-  "versionCode": 45,
-  "versionName": "0.20.2",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.2.apk",
-  "notes": "小米绑定教程增加手机网页提取KEY入口(第三方站点,国内可能打不开,已标注风险);首页Garmin昵称改为显示displayName昵称而非fullName真实姓名,昵称缺失或是GUID时兜底不暴露真名;仅UI与显示逻辑改动,主链路不变",
+  "versionCode": 46,
+  "versionName": "0.20.3",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.20.3.apk",
+  "notes": "修复首页昵称显示为「Garmin用户」:佳明displayName对很多账号是GUID或空,改为多字段尝试displayName再userName(邮箱取@前),都读不到才兜底;仍绝不显示真实姓名;日志增加原始字段输出方便定位;仅显示逻辑改动",
   "size": 9837733
 }

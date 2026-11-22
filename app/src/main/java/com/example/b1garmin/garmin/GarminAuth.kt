@@ -519,20 +519,36 @@ class GarminAuth(private val context: Context, val region: Region = Region.GLOBA
                     return@withContext Result.failure(Exception("读取账号资料失败 HTTP ${resp.code}"))
                 }
                 val j = JSONObject(text)
-                // 接口返回的是 large/medium/small 三个尺寸，没有单个 profileImageUrl。
-                // 显示名用 displayName（账号昵称），不用 fullName（真实姓名）。
-                // 极少数账号 displayName 是一串 GUID，这时用中性兜底，绝不退回真实姓名。
-                val display = j.optString("displayName").trim()
-                val guidLike =
-                    Regex("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").matches(display) ||
-                    Regex("(?i)^[0-9a-f]{32}$").matches(display)
-                val name = if (display.isBlank() || guidLike) "Garmin 用户" else display
+                // 佳明 socialProfile 字段说明（别再选错）：
+                //  - displayName 常是给接口用的 GUID/标识，未必是可读昵称（很多账号是 GUID 或空）
+                //  - fullName 是账号真实姓名 —— 用户明确不要显示，绝不用
+                //  - userName 是佳明用户名，有时是邮箱，可用 @ 前部分当昵称
+                // 目标：显示一个「可读的昵称」，绝不暴露真实姓名；都读不到才用中性兜底。
+                val rawDisplay = j.optString("displayName").trim()
+                val rawUserName = j.optString("userName").trim()
+
+                fun looksLikeId(s: String): Boolean {
+                    if (s.isBlank()) return true
+                    if (Regex("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").matches(s)) return true
+                    if (Regex("(?i)^[0-9a-f]{32}$").matches(s)) return true
+                    if (s.length >= 6 && s.all { it.isDigit() }) return true  // 纯数字账号 ID
+                    return false
+                }
+                fun readableNick(s: String): String? {
+                    if (looksLikeId(s)) return null
+                    val nick = if (s.contains("@")) s.substringBefore("@") else s  // 邮箱取 @ 前
+                    return nick.trim().takeIf { it.isNotBlank() }
+                }
+                val name = readableNick(rawDisplay)
+                    ?: readableNick(rawUserName)
+                    ?: "Garmin 用户"
                 val avatarRaw = listOf(
                     "profileImageUrlLarge", "profileImageUrlMedium", "profileImageUrlSmall"
                 ).map { j.optString(it) }
                     .firstOrNull { it.isNotBlank() && !it.equals("null", true) }
                 val avatar = avatarRaw?.let { if (it.startsWith("http")) it else connectApi + it }
-                log("账号资料：${name.ifBlank { "（未命名）" }}${if (avatar != null) " · 已获取头像" else " · 未设置头像"}")
+                log("账号资料：displayName=[${rawDisplay.ifBlank { "空" }}] userName=[${rawUserName.ifBlank { "空" }}] → 界面昵称=[$name]" +
+                    "${if (avatar != null) " · 已获取头像" else " · 未设置头像"}")
                 Result.success(
                     SocialProfile(
                         displayName = name,
