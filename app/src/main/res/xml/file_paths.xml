@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 更新器把 APK 下载到 cacheDir/apk/，这里授权通过 FileProvider 分享给系统安装器 -->
     <cache-path name="update_apk" path="apk/" />
+    <!-- 米家登录二维码保存到 cacheDir/qrcodes/，用 FileProvider 打开让用户能用相册/文件管理查看并分享给米家 App -->
+    <cache-path name="qrcodes" path="qrcodes/" />
 </paths>

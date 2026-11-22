@@ -2,6 +2,6 @@
   "versionCode": 49,
   "versionName": "0.21.0",
   "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.21.0.apk",
-  "notes": "新增米家体脂秤扫码授权（实验性，需米家账号已绑定小米 S400/S800 秤，可能失效，不影响阿福/薄荷 B1 正常称重同步）；佳明登录页输入框改白底黑字",
-  "size": 9878756
+  "notes": "修复米家扫码登录问题：添加等待倒计时提示、保存二维码图片功能",
+  "size": 9878792
 }

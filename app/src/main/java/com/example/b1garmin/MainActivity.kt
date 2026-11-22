@@ -6,6 +6,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -40,6 +43,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.lifecycle.lifecycleScope
 import com.example.b1garmin.ble.ScaleReader
 import com.example.b1garmin.garmin.GarminAuth
@@ -1912,6 +1917,7 @@ class MainActivity : ComponentActivity() {
         var miAuthSession by remember { mutableStateOf<XiaomiCloudAuth.Session?>(null) }
         var miDevices by remember { mutableStateOf<List<XiaomiCloudAuth.ScaleDevice>>(emptyList()) }
         var miQrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+        var qrPngBytes by remember { mutableStateOf<ByteArray?>(null) }
 
         Surface(Modifier.fillMaxSize()) {
             Column(
@@ -2159,6 +2165,7 @@ class MainActivity : ComponentActivity() {
                             Column(
                                 Modifier.padding(16.dp).verticalScroll(rememberScrollState())
                             ) {
+                                val ctx = LocalContext.current
                                 Text("米家扫码授权获取 KEY", style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.height(6.dp))
                                 Text(miAuthStatus, style = MaterialTheme.typography.bodySmall,
@@ -2178,6 +2185,46 @@ class MainActivity : ComponentActivity() {
                                     Text("用米家 App 扫上面的二维码，并在手机上点「确认登录」。",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.outline)
+                                    Spacer(Modifier.height(4.dp))
+                                    // 保存二维码图片，让用户能用相册/文件管理打开后分享给米家 App
+                                    Row(verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()) {
+                                        Text("💡 截图不方便？先保存图片再用米家 App 相册扫码：",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.width(6.dp))
+                                        Button(onClick = {
+                                            val bytes = qrPngBytes ?: byteArrayOf()
+                                            if (bytes.isEmpty()) {
+                                                miAuthStatus = "✗ 二维码数据为空，请先重新获取"
+                                                return@Button
+                                            }
+                                            val dir = File(ctx.cacheDir, "qrcodes")
+                                            if (!dir.exists()) dir.mkdirs()
+                                            val f = File(dir, "mi_qr_${System.currentTimeMillis()}.png")
+                                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                                ?.let { bmp ->
+                                                    java.io.FileOutputStream(f).use { out ->
+                                                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                                                    }
+                                                }
+                                            try {
+                                                val uri = FileProvider.getUriForFile(
+                                                    ctx, "${ctx.packageName}.fileprovider", f)
+                                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(uri, "image/png")
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                ctx.startActivity(viewIntent)
+                                            } catch (e: Exception) {
+                                                miAuthStatus = "✗ 打开图片失败：${e.message}"
+                                            }
+                                        }, enabled = qrPngBytes != null,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                                            Text(if (qrPngBytes != null) "保存二维码图片" else "二维码加载中…")
+                                        }
+                                    }
                                 }
 
                                 Spacer(Modifier.height(10.dp))
@@ -2194,11 +2241,15 @@ class MainActivity : ComponentActivity() {
                                         val qrPng = XiaomiCloudAuth.downloadQr(t.qrImageUrl)
                                         if (qrPng.isSuccess) {
                                             val bytes = qrPng.getOrThrow()
+                                            qrPngBytes = bytes
                                             val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                             if (bmp != null) miQrBitmap = bmp.asImageBitmap()
                                         }
-                                        miAuthStatus = "请用米家 App 扫描二维码并确认登录…"
+                                        miAuthStatus = "请用米家 App 扫描二维码并确认登录（倒计时中…）"
                                         val result = XiaomiCloudAuth.waitForScan(t,
+                                            onTick = { waitedSec ->
+                                                miAuthStatus = "等待扫码中… ${waitedSec}秒/${ticket.getOrThrow().timeoutSec}秒"
+                                            },
                                             shouldStop = { !showMiAuth })
                                         if (result.isFailure) {
                                             miAuthStatus = "✗ ${result.exceptionOrNull()?.message ?: "扫码失败"}"
