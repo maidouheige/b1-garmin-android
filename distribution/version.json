@@ -1,7 +1,9 @@
 {
   "versionCode": 55,
   "versionName": "0.22.0",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.22.0.apk",
-  "notes": "合并 QingMings 改进：添加 Room 数据库、后台自动补传、深色模式框架",
-  "size": 10525058
+  "url": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.22.0/B1-Garmin-Sync-v0.22.0.apk",
+  "notes": "修复 APK 下载链接：APK>10MB 时自动使用 GitHub Release 链接",
+  "size": 10525058,
+  "giteeUrl": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.22.0.apk",
+  "githubUrl": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.22.0/B1-Garmin-Sync-v0.22.0.apk"
 }

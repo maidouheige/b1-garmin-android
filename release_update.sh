@@ -68,6 +68,8 @@ APK_SRC="app/build/outputs/apk/debug/app-debug.apk"
 APK_NAME="B1-Garmin-Sync-${TAG}.apk"
 APK_DST="distribution/${APK_NAME}"
 RAW_URL="https://gitee.com/${GITEE_USER}/${REPO}/raw/master/distribution/${APK_NAME}"
+# GitHub Release 直链（APK 附件，无需登录）
+GITHUB_APK_URL="https://github.com/${GH_USER}/${REPO}/releases/download/${TAG}/${APK_NAME}"
 
 echo "==> 发布 ${TAG} (code ${VC}) → Gitee + GitHub"
 
@@ -86,11 +88,14 @@ echo "==> [2/8] 复制 APK 到 distribution/"
 cp "$APK_SRC" "$APK_DST"
 
 echo "==> [3/8] 生成 version.json"
-python3 - "$VC" "$VER" "$RAW_URL" "$NOTES" "$SIZE_BYTES" <<'PY'
+python3 - "$VC" "$VER" "$RAW_URL" "$GITHUB_APK_URL" "$NOTES" "$SIZE_BYTES" <<'PY'
 import json, sys
-vc, ver, url, notes, size = sys.argv[1:6]
-data = {"versionCode": int(vc), "versionName": ver, "url": url,
-        "notes": notes, "size": int(size)}
+vc, ver, gitee_url, github_url, notes, size = sys.argv[1:7]
+# APK > 10MB 时优先使用 GitHub Release 链接（无需登录）
+fallback_url = github_url if int(size) > 10000000 else gitee_url
+data = {"versionCode": int(vc), "versionName": ver, "url": fallback_url,
+        "notes": notes, "size": int(size),
+        "giteeUrl": gitee_url, "githubUrl": github_url}
 with open("distribution/version.json", "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
     f.write("\n")
@@ -176,8 +181,14 @@ rm -f "$NOTES_FILE"
 
 echo ""
 echo "✓ 双平台发布完成！"
-echo "  Gitee  版本清单: https://gitee.com/${GITEE_USER}/${REPO}/raw/master/distribution/version.json"
-echo "  Gitee  APK 直链: ${RAW_URL}"
+echo "  version.json: https://gitee.com/${GITEE_USER}/${REPO}/raw/master/distribution/version.json"
+if [ "$SIZE_BYTES" -gt 10000000 ]; then
+    echo "  ⚠️  APK 超过 10MB，请使用以下链接下载："
+    echo "      GitHub: ${GITHUB_APK_URL}"
+    echo "      Gitee:  ${RAW_URL}（需登录）"
+else
+    echo "  Gitee  APK 直链: ${RAW_URL}"
+fi
 echo "  Gitee  Release:  https://gitee.com/${GITEE_USER}/${REPO}/releases"
 echo "  GitHub Release:  https://github.com/${GH_USER}/${REPO}/releases/tag/${TAG}"
 echo ""
