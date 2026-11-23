@@ -117,6 +117,24 @@ object ScaleCatalog {
         id?.takeIf { it.isNotBlank() }?.let { v -> all.firstOrNull { it.id.equals(v, true) } }
 
     /**
+     * 记录/列表里显示的品牌级名称：阿福体脂秤 / 荣耀体脂秤 / 小米体脂秤。
+     * 不区分 B1/A1/S400/S800 这些具体型号——用户只关心是哪个牌子的秤。
+     * @param modelOrBrand 记录里存的 model（displayName）或 brand，或型号 id
+     */
+    fun familyName(modelOrBrand: String?): String {
+        val s = modelOrBrand.orEmpty()
+        if (s.isBlank()) return "未知秤"
+        return when {
+            s.contains("小米", true) || s.contains("云米", true) || s.equals("XIAOMI_S400", true) ||
+                    s.equals("XIAOMI_S800", true) -> "小米体脂秤"
+            s.contains("荣耀", true) || s.contains("华为", true) || s.equals("HONOR", true) -> "荣耀体脂秤"
+            s.contains("阿福", true) || s.contains("薄荷", true) || s.contains("沃莱", true) ||
+                    s.contains("ICOMON", true) || s.equals("B1", true) || s.equals("A1", true) -> "阿福体脂秤"
+            else -> s  // 真是别的牌子就原样显示
+        }
+    }
+
+    /**
      * 按广播名和服务自动识别型号。
      * 返回 null = 这台设备不像我们支持的秤。
      */

@@ -1,10 +1,10 @@
 {
-  "versionCode": 57,
-  "versionName": "0.23.1",
-  "url": "https://gitee.com/maidouheige/b1-garmin-android/releases/download/v0.23.1/B1-Garmin-Sync-v0.23.1.apk",
-  "notes": "ui调整",
-  "size": 10602886,
-  "giteeUrl": "https://gitee.com/maidouheige/b1-garmin-android/releases/download/v0.23.1/B1-Garmin-Sync-v0.23.1.apk",
-  "githubUrl": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.23.1/B1-Garmin-Sync-v0.23.1.apk",
-  "rawUrl": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.23.1.apk"
+  "versionCode": 58,
+  "versionName": "0.23.2",
+  "url": "https://gitee.com/maidouheige/b1-garmin-android/releases/download/v0.23.2/B1-Garmin-Sync-v0.23.2.apk",
+  "notes": "修复同步历史显示未知型号、未知秤的问题；秤名改为按品牌显示（阿福/荣耀/小米体脂秤）",
+  "size": 10606978,
+  "giteeUrl": "https://gitee.com/maidouheige/b1-garmin-android/releases/download/v0.23.2/B1-Garmin-Sync-v0.23.2.apk",
+  "githubUrl": "https://github.com/maidouheige/b1-garmin-android/releases/download/v0.23.2/B1-Garmin-Sync-v0.23.2.apk",
+  "rawUrl": "https://gitee.com/maidouheige/b1-garmin-android/raw/master/distribution/B1-Garmin-Sync-v0.23.2.apk"
 }

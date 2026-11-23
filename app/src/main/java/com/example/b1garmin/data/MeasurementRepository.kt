@@ -114,6 +114,12 @@ class MeasurementRepository private constructor(
         return dao.byKey(key)?.id ?: -1L
     }
 
+    /** 给某台秤的历史空型号记录补上型号（老版本写入时用了错误的 key 导致型号为空） */
+    suspend fun backfillModel(mac: String, model: String, brand: String) {
+        if (mac.isBlank() || model.isBlank()) return
+        dao.backfillModel(mac, model, brand, System.currentTimeMillis())
+    }
+
     suspend fun markUploaded(id: Long) {
         if (id > 0) dao.markUploaded(id, System.currentTimeMillis())
     }

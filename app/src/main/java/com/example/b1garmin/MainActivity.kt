@@ -310,7 +310,14 @@ class MainActivity : ComponentActivity() {
             Log.w("B1Garmin", "本地记录库初始化失败，本次不落地：${e.message}")
             null
         }
-        val localModel = ScaleCatalog.byId(prefs.getString("cur_scale_model", "") ?: "")
+        // 型号解析：优先用绑定秤的型号（地址匹配时），否则按当前连上的广播名推断。
+        // 之前误用了不存在的 key「cur_scale_model」，导致记录型号一直为空、筛选全归「未知秤」。
+        val boundNow = scale.boundScale()
+        val localModel = if (boundNow != null && boundNow.address.equals(addr, ignoreCase = true)) {
+            ScaleCatalog.byId(boundNow.model)
+        } else {
+            ScaleCatalog.match(prefs.getString("cur_scale_name", "") ?: "")
+        }
 
         // 旁路写入本地记录：任何异常都吞掉，绝不影响称重主流程和 Garmin 上传
         suspend fun recordLocal(
@@ -775,6 +782,21 @@ class MainActivity : ComponentActivity() {
         }
 
         askPermissions()
+
+        // 老版本写入记录时型号 key 写错，导致「未知型号/未知秤」。
+        // 这里按当前绑定秤把同 MAC 的空型号历史记录补上，避免一条记录既在 B1 又在未知秤。
+        lifecycleScope.launch {
+            try {
+                scale.boundScale()?.let { bound ->
+                    ScaleCatalog.byId(bound.model)?.let { m ->
+                        com.example.b1garmin.data.MeasurementRepository.get(this@MainActivity)
+                            .backfillModel(bound.address, m.displayName, m.brand)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("B1Garmin", "补型号失败：${e.message}")
+            }
+        }
 
         // 启动后台补传：每 6 小时有网时自动重试上传失败的记录
         RetryWorker.schedule(this)

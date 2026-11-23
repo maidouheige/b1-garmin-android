@@ -1074,7 +1074,7 @@ private fun RecordRow(row: MeasurementEntity, topDivider: Boolean, onClick: () -
                     )
                 }
                 Text(
-                    "${formatTime(row.measuredAt)} · ${row.model.ifBlank { row.brand.ifBlank { "未知型号" } }}",
+                    "${formatTime(row.measuredAt)} · ${com.example.b1garmin.scale.ScaleCatalog.familyName(row.model.ifBlank { row.brand })}",
                     style = MaterialTheme.typography.labelSmall,
                     color = GColor.Muted,
                     maxLines = 1,
@@ -1289,7 +1289,7 @@ private fun RecordDetailPage(
             GPanel {
                 GRow(
                     title = "设备",
-                    subtitle = "${row.brand} ${row.model}".trim().ifBlank { "—" },
+                    subtitle = com.example.b1garmin.scale.ScaleCatalog.familyName(row.model.ifBlank { row.brand }),
                     lead = { GLead(GIconKind.Scale) },
                 )
                 GRow(
@@ -1388,7 +1388,7 @@ private fun WeightHero(row: MeasurementEntity, previous: MeasurementEntity?) {
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${row.brand} ${row.model}".trim().ifBlank { "未知设备" },
+                    com.example.b1garmin.scale.ScaleCatalog.familyName(row.model.ifBlank { row.brand }),
                     style = MaterialTheme.typography.labelSmall,
                     color = GColor.Muted,
                     maxLines = 1,
@@ -1759,7 +1759,9 @@ private fun startOfDay(nowMs: Long, days: Int): Long {
 }
 
 private fun scaleLabel(row: MeasurementEntity): String =
-    row.model.ifBlank { row.brand.ifBlank { "未知秤" } }
+    com.example.b1garmin.scale.ScaleCatalog.familyName(
+        row.model.ifBlank { row.brand }
+    )
 
 private fun fmt1(v: Double?): String = v?.let { "%.1f".format(it) } ?: "—"
 

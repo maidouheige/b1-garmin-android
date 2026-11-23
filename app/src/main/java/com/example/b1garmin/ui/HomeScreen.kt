@@ -468,7 +468,7 @@ private fun RecentList(recent: List<MeasurementEntity>?, onOpenAll: () -> Unit) 
             }
             GRow(
                 title = "%.2f kg".format(row.weightKg),
-                subtitle = "${formatDateTime(row.measuredAt)} · ${row.model.ifBlank { "未知型号" }}",
+                subtitle = "${formatDateTime(row.measuredAt)} · ${com.example.b1garmin.scale.ScaleCatalog.familyName(row.model.ifBlank { row.brand })}",
                 lead = { GLead(GIconKind.Scale) },
                 topDivider = index > 0,
                 onClick = onOpenAll,

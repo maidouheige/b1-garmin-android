@@ -64,6 +64,13 @@ interface MeasurementDao {
         now: Long,
     )
 
+    /** 给旧记录补型号：同一台秤（MAC）里 model/brand 为空的，按绑定型号回填 */
+    @Query(
+        "UPDATE measurements SET model = :model, brand = :brand, updated_at = :now " +
+            "WHERE scale_mac = :mac AND (model = '' OR model IS NULL)"
+    )
+    suspend fun backfillModel(mac: String, model: String, brand: String, now: Long)
+
     @Query("DELETE FROM measurements WHERE id = :id")
     suspend fun delete(id: Long)
 }
