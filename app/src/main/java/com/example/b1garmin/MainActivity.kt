@@ -56,6 +56,9 @@ import com.example.b1garmin.scale.ScaleCatalog
 import com.example.b1garmin.scale.ScaleMeasurement
 import com.example.b1garmin.scale.ScaleUser
 import com.example.b1garmin.ui.CalibStore
+import com.example.b1garmin.ui.HomeScreen
+import com.example.b1garmin.ui.WeighStage
+import com.example.b1garmin.ui.ProfileScreen
 import com.example.b1garmin.ui.Profile
 import com.example.b1garmin.ui.ProfileStore
 import com.example.b1garmin.ui.ScaleCalib
@@ -168,6 +171,16 @@ class MainActivity : ComponentActivity() {
     private var resumeListenAfterCalib = false
     /** 进绑定页前是否开着监听，返回时据此恢复 */
     private var resumeListenAfterBind = false
+
+    /** 把称重阶段的中文提示映射到首页徽标阶段（fork Garmin 风 UI 用） */
+    private fun weighStageOf(phase: String, autoListen: Boolean): WeighStage = when {
+        !autoListen || phase.contains("暂停") || phase.contains("停止") -> WeighStage.PAUSED
+        phase.contains("出错") || phase.contains("重试") || phase.contains("异常") -> WeighStage.ERROR
+        phase.contains("✓") || phase.contains("完成") -> WeighStage.DONE
+        phase.contains("找秤") || phase.contains("在等它") || phase.contains("连接") -> WeighStage.CONNECTING
+        phase.contains("连上") || phase.contains("就绪") || phase.contains("站上") -> WeighStage.WAITING
+        else -> WeighStage.WAITING
+    }
 
     private fun crashFile() = java.io.File(filesDir, "last_crash.txt")
 
@@ -802,19 +815,22 @@ class MainActivity : ComponentActivity() {
             }
             GarminTheme(dark = isDark) {
                 val scope = rememberCoroutineScope()
-                var showLogin by remember { mutableStateOf(false) }       // 网页登录 WebView
-                var showLoginPage by remember { mutableStateOf(false) }   // 登录页（账号/密码输入）
-                var showSettings by remember { mutableStateOf(false) }    // 资料编辑页
-                var showSettingsHub by remember { mutableStateOf(false) } // 设置中心（账户/蓝牙/资料/校准/外观/关于）
-                var showCalib by remember { mutableStateOf(false) }
-                var showBind by remember { mutableStateOf(false) }      // 绑定秤页（识别 A1/B1 并锁定通道）
-                var showRecords by remember { mutableStateOf(false) }   // 记录页
+                var tabIndex by remember { mutableStateOf(0) }            // 主 tab：0=首页 1=记录 2=我的
+                var showLogin by remember { mutableStateOf(false) }       // 网页登录 WebView（子页）
+                var showLoginPage by remember { mutableStateOf(false) }   // 登录页（子页）
+                var showSettings by remember { mutableStateOf(false) }    // 资料编辑页（子页）
+                var showCalib by remember { mutableStateOf(false) }       // 校准（子页）
+                var showBind by remember { mutableStateOf(false) }        // 绑定秤（子页，从「我的」进）
+                // 首页「最近同步」列表：订阅本地 Room，称重落地后自动刷新
+                val recent by androidx.compose.runtime.produceState<List<com.example.b1garmin.data.MeasurementEntity>?>(initialValue = null) {
+                    com.example.b1garmin.data.MeasurementRepository.get(this@MainActivity)
+                        .observeRecent(5).collect { value = it }
+                }
                 val loggedIn by loggedInState
 
-                // 系统侧滑/返回键：有子页面就逐层返回，只有在首页才退出 App。
-                // 依赖 BackHandler 的 enabled 条件：任一子页打开时接管返回事件。
+                // 返回键：先关子页面；没子页时二级 tab 回首页；在首页才退出 App。
                 BackHandler(enabled = showLogin || showLoginPage || showSettings ||
-                        showSettingsHub || showCalib || showBind || showRecords) {
+                        showCalib || showBind || tabIndex != 0) {
                     when {
                         showLogin -> showLogin = false
                         showLoginPage -> showLoginPage = false
@@ -827,8 +843,7 @@ class MainActivity : ComponentActivity() {
                             showBind = false
                             if (resumeListenAfterBind) startListen()
                         }
-                        showRecords -> showRecords = false
-                        showSettingsHub -> showSettingsHub = false
+                        tabIndex != 0 -> tabIndex = 0
                     }
                 }
 
@@ -839,10 +854,9 @@ class MainActivity : ComponentActivity() {
                             ProfileStore.save(this, p)
                             profileState.value = p
                             showSettings = false
-                            showSettingsHub = true
                             log("✓ 资料已保存：身高 %.1fcm · %s · %d岁".format(p.heightCm, p.sexLabel, p.age))
                         },
-                        onClose = { showSettings = false; showSettingsHub = true }
+                        onClose = { showSettings = false }
                     )
                 } else if (showLogin) {
                     val currentRegion = regionState.value
@@ -854,7 +868,6 @@ class MainActivity : ComponentActivity() {
                                 log("抓到 ticket（长度 ${ticket.length}），正在换取 token…")
                                 showLogin = false
                                 showLoginPage = false
-                                showSettingsHub = false
                                 scope.launch {
                                     val r = auth.exchangeTicket(ticket)
                                     loggedInState.value = r.isSuccess
@@ -885,7 +898,7 @@ class MainActivity : ComponentActivity() {
                         region = regionState.value,
                         onRegionChange = { switchRegion(it) },
                         onWebLogin = { showLogin = true },
-                        onBack = { showLoginPage = false; showSettingsHub = true },
+                        onBack = { showLoginPage = false },
                     )
                 } else if (showCalib) {
                     CalibScreen(
@@ -902,97 +915,137 @@ class MainActivity : ComponentActivity() {
                             if (resumeListenAfterBind) startListen()
                         },
                     )
-                } else if (showSettingsHub) {
-                    SettingsHubScreen(
-                        version = versionName(),
-                        loggedIn = loggedIn,
-                        regionLabel = regionState.value.label,
-                        avatar = garminAvatar,
-                        garminName = garminName,
-                        onBack = { showSettingsHub = false },
-                        onOpenProfile = { showSettings = true },
-                        onOpenLogin = { showLoginPage = true },
-                        onOpenCalib = {
-                            // 校准要先用阿福称一次，我们的监听占着 BLE 会连不上 → 暂停让位
-                            resumeListenAfterCalib = autoListen
-                            stopListen()
-                            showCalib = true
-                        },
-                        onOpenBind = {
-                            // 绑定要扫描附近设备，我们的监听占着 BLE 会互相干扰 → 暂停让位
-                            resumeListenAfterBind = autoListen
-                            stopListen()
-                            showBind = true
-                        },
-                        btState = { btTick.value; scale.stateText() },
-                        btReady = { btTick.value; scale.isBluetoothReady() },
-                        btDiag = { btTick.value; scale.diagnose() },
-                        onEnableBluetooth = {
-                            if (scale.isBluetoothReady()) {
-                                log("蓝牙已经是开着的")
-                            } else {
-                                log("正在打开蓝牙…")
-                                try {
-                                    enableBtLauncher.launch(scale.enableBluetoothIntent())
-                                } catch (e: Exception) {
-                                    log("✗ 无法打开蓝牙：${e.message}")
+                } else {
+                    // 主界面：三个 tab 常驻底部；子页面（登录/校准/绑定/资料）整屏盖在上面
+                    Box(Modifier.fillMaxSize()) {
+                        Column(Modifier.fillMaxSize()) {
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                when (tabIndex) {
+                                    0 -> HomeScreen(
+                                        avatar = garminAvatar,
+                                        garminName = garminName,
+                                        boundLabel = scale.boundScale()?.let {
+                                            ScaleCatalog.byId(it.model)?.displayName
+                                        },
+                                        autoListen = autoListen,
+                                        liveKg = liveKg,
+                                        liveLocked = liveLocked,
+                                        livePhase = livePhase,
+                                        weighStage = weighStageOf(livePhase, autoListen),
+                                        estimate = liveEstimate,
+                                        summary = summary,
+                                        logs = logs,
+                                        showDebug = showDebug,
+                                        lastCrash = lastCrash,
+                                        recent = recent,
+                                        onWeigh = {
+                                            autoListen = true
+                                            startListen()
+                                            livePhase = "正在找秤…（轻踩一下秤唤醒）"
+                                        },
+                                        onToggleListen = {
+                                            autoListen = !autoListen
+                                            if (autoListen) {
+                                                startListen()
+                                                livePhase = "正在找秤…（轻踩一下秤唤醒）"
+                                            } else {
+                                                stopListen()
+                                            }
+                                        },
+                                        onOpenProfile = { tabIndex = 2 },
+                                        onOpenRecords = { tabIndex = 1 },
+                                        onToggleDebug = { showDebug = !showDebug },
+                                        onCopyLogs = {
+                                            try {
+                                                val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                cb.setPrimaryClip(ClipData.newPlainText("B1日志", logs.joinToString("\n")))
+                                                ui.post { summary = "✓ 日志已复制，可粘贴发给别人" }
+                                            } catch (e: Exception) {
+                                                ui.post { summary = "复制失败：${e.message}" }
+                                            }
+                                        },
+                                        onClearLogs = { logs.clear(); summary = "" },
+                                        onClearCrash = {
+                                            try { crashFile().delete(); lastCrash = "" } catch (_: Exception) {}
+                                        },
+                                    )
+                                    1 -> RecordsScreen(onRetry = { entity ->
+                                        if (auth.load() == null) {
+                                            kotlin.Result.failure(Exception("请先登录 Garmin"))
+                                        } else {
+                                            com.example.b1garmin.data.RecordRetry.retry(
+                                                entity, auth,
+                                                com.example.b1garmin.data.MeasurementRepository.get(this@MainActivity),
+                                                ledger,
+                                            ) { log(it) }
+                                        }
+                                    })
+                                    2 -> ProfileScreen(
+                                        version = versionName(),
+                                        loggedIn = loggedIn,
+                                        regionLabel = regionState.value.label,
+                                        avatar = garminAvatar,
+                                        garminName = garminName,
+                                        profile = profileState.value,
+                                        recent = recent,
+                                        autoListen = autoListen,
+                                        boundLabel = scale.boundScale()?.let {
+                                            ScaleCatalog.byId(it.model)?.displayName
+                                        },
+                                        btState = { btTick.value; scale.stateText() },
+                                        btReady = { btTick.value; scale.isBluetoothReady() },
+                                        btDiag = { btTick.value; scale.diagnose() },
+                                        onOpenLogin = { showLoginPage = true },
+                                        onOpenProfile = { showSettings = true },
+                                        onOpenCalib = {
+                                            resumeListenAfterCalib = autoListen
+                                            stopListen()
+                                            showCalib = true
+                                        },
+                                        onOpenBind = {
+                                            resumeListenAfterBind = autoListen
+                                            stopListen()
+                                            showBind = true
+                                        },
+                                        onToggleListen = {
+                                            autoListen = !autoListen
+                                            if (autoListen) startListen() else stopListen()
+                                        },
+                                        onEnableBluetooth = {
+                                            if (scale.isBluetoothReady()) {
+                                                log("蓝牙已经是开着的")
+                                            } else {
+                                                log("正在打开蓝牙…")
+                                                try {
+                                                    enableBtLauncher.launch(scale.enableBluetoothIntent())
+                                                } catch (e: Exception) {
+                                                    log("✗ 无法打开蓝牙：${e.message}")
+                                                }
+                                            }
+                                        },
+                                        onRequestPermission = {
+                                            askPermissions()
+                                            log("已请求蓝牙权限，请在弹出的对话框里选「允许」")
+                                        },
+                                        onCheckUpdate = { scope.launch { checkUpdate(silent = false) } },
+                                        themeMode = themeModeState.value,
+                                        onThemeModeChange = { mode ->
+                                            ThemeStore.save(this@MainActivity, mode)
+                                            themeModeState.value = mode
+                                            log("✓ 主题已切换为「${
+                                                when (mode) {
+                                                    ThemeStore.SYSTEM -> "跟随系统"
+                                                    ThemeStore.LIGHT -> "浅色"
+                                                    else -> "深色"
+                                                }
+                                            }」")
+                                        },
+                                    )
                                 }
                             }
-                        },
-                        onRequestPermission = {
-                            askPermissions()
-                            log("已请求蓝牙权限，请在弹出的对话框里选「允许」")
-                        },
-                        onOpenAppSettings = {
-                            try {
-                                val intent = android.content.Intent(
-                                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
-                                ).setData(android.net.Uri.parse("package:$packageName"))
-                                startActivity(intent)
-                                log("已打开本应用的系统设置，请把「附近的设备」权限改成允许")
-                            } catch (e: Exception) {
-                                log("✗ 打不开设置：${e.message}")
-                            }
-                        },
-                        onCheckUpdate = { scope.launch { checkUpdate(silent = false) } },
-                    )
-                } else {
-                    if (showRecords) {
-                        RecordsScreen(onRetry = { entity ->
-                            if (auth.load() == null) {
-                                kotlin.Result.failure(Exception("请先登录 Garmin"))
-                            } else {
-                                com.example.b1garmin.data.RecordRetry.retry(
-                                    entity, auth,
-                                    com.example.b1garmin.data.MeasurementRepository.get(this@MainActivity),
-                                    ledger,
-                                ) { log(it) }
-                            }
-                        })
-                    } else {
-                        MainScreen(
-                            version = versionName(),
-                            avatar = garminAvatar,
-                            garminName = garminName,
-                            boundLabel = scale.boundScale()?.let { ScaleCatalog.byId(it.model)?.displayName },
-                            autoListen = autoListen,
-                            onWeigh = {
-                                autoListen = true
-                                startListen()
-                                livePhase = "正在找秤…（轻踩一下秤唤醒）"
-                            },
-                            onToggleListen = {
-                                autoListen = !autoListen
-                                if (autoListen) startListen() else stopListen()
-                            },
-                            onOpenSettings = { showSettingsHub = true },
-                            onOpenBind = {
-                                resumeListenAfterBind = autoListen
-                                stopListen()
-                                showBind = true
-                            },
-                            onOpenRecords = { showRecords = true },
-                        )
+                            // 底部 tab 常驻，切页只换上面的内容区
+                            GTabBar(selected = tabIndex, onSelect = { tabIndex = it })
+                        }
                     }
                 }
 
@@ -1479,10 +1532,6 @@ class MainActivity : ComponentActivity() {
         boundLabel: String?,
         autoListen: Boolean,
         onToggleListen: () -> Unit,
-        onWeigh: () -> Unit,
-        onOpenSettings: () -> Unit,
-        onOpenBind: () -> Unit,
-        onOpenRecords: () -> Unit,
     ) {
         val scope = rememberCoroutineScope()
         Surface(Modifier.fillMaxSize()) {
@@ -1507,15 +1556,6 @@ class MainActivity : ComponentActivity() {
                             maxLines = 1
                         )
                     }
-                    OutlinedButton(
-                        onClick = onOpenSettings,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = null,
-                            modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("设置", style = MaterialTheme.typography.bodySmall)
-                    }
                 }
                 Text("v$version · 打开就自动称重，站上秤即可", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline)
@@ -1531,7 +1571,7 @@ class MainActivity : ComponentActivity() {
                         Modifier.padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // 阶段状态 + 暂停/继续开关
+                        // 阶段状态 + 一个按钮（监听中点「暂停」，暂停时点「称重/继续」）
                         Row(verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()) {
                             Text(
@@ -1541,16 +1581,10 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(
-                                onClick = onWeigh,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text("称重", style = MaterialTheme.typography.labelMedium)
-                            }
-                            TextButton(
                                 onClick = onToggleListen,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                             ) {
-                                Text(if (autoListen) "暂停" else "继续",
+                                Text(if (autoListen) "暂停" else "称重/继续",
                                     style = MaterialTheme.typography.labelMedium)
                             }
                         }
@@ -1741,16 +1775,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // ---------------- 底部 Tab 栏（当前显示的就是首页，固定高亮首页）----------------
-                // 设备/记录/我的作为快捷入口打开对应全屏页，返回后仍回到这个首页。
-                GTabBar(selected = 0, onSelect = {
-                    when (it) {
-                        0 -> { /* 已在首页 */ }
-                        1 -> onOpenBind()      // 设备 → 绑定页
-                        2 -> onOpenRecords()   // 记录 → 本地记录页
-                        3 -> onOpenSettings()  // 我的 → 设置中心
-                    }
-                })
             }
 
         }

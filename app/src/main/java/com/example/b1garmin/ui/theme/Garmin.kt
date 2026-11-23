@@ -576,8 +576,8 @@ fun GCircleIconButton(
 // ====================================================================
 
 @Composable
-fun GTabBar(selected: Int, onSelect: (Int) -> Unit) {
-    Column(Modifier.fillMaxWidth().background(GColor.Surface).navigationBarsPadding()) {
+fun GTabBar(modifier: Modifier = Modifier, selected: Int, onSelect: (Int) -> Unit) {
+    Column(modifier.fillMaxWidth().background(GColor.Surface).navigationBarsPadding()) {
         HorizontalDivider(color = GColor.Line)
         Row(
             Modifier.fillMaxWidth().height(66.dp).padding(horizontal = 6.dp),
@@ -587,9 +587,8 @@ fun GTabBar(selected: Int, onSelect: (Int) -> Unit) {
                 Icon(Icons.Default.Home, contentDescription = null, tint = tint,
                     modifier = Modifier.size(21.dp))
             }
-            TabItem(1, "设备", selected, onSelect) { tint -> GIcon(GIconKind.Scale, tint = tint) }
-            TabItem(2, "记录", selected, onSelect) { tint -> GIcon(GIconKind.Bars, tint = tint) }
-            TabItem(3, "我的", selected, onSelect) { tint ->
+            TabItem(1, "记录", selected, onSelect) { tint -> GIcon(GIconKind.Bars, tint = tint) }
+            TabItem(2, "我的", selected, onSelect) { tint ->
                 Icon(Icons.Default.Person, contentDescription = null, tint = tint,
                     modifier = Modifier.size(21.dp))
             }
